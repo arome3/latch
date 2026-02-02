@@ -248,6 +248,7 @@ contract BatchLibTest is Test {
             revealDuration: revealDuration,
             settleDuration: settleDuration,
             claimDuration: claimDuration,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -275,6 +276,7 @@ contract BatchLibTest is Test {
             revealDuration: Constants.DEFAULT_REVEAL_DURATION,
             settleDuration: Constants.DEFAULT_SETTLE_DURATION,
             claimDuration: Constants.DEFAULT_CLAIM_DURATION,
+            feeRate: Constants.DEFAULT_FEE_RATE,
             whitelistRoot: bytes32(0)
         });
     }

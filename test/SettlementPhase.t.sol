@@ -88,7 +88,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 7;
+        return 9;
     }
 }
 
@@ -206,6 +206,7 @@ contract SettlementPhaseTest is Test {
             revealDuration: REVEAL_DURATION,
             settleDuration: SETTLE_DURATION,
             claimDuration: CLAIM_DURATION,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
     }
@@ -248,7 +249,7 @@ contract SettlementPhaseTest is Test {
         bytes32 ordersRoot,
         bytes32 whitelistRoot
     ) internal pure returns (bytes32[] memory) {
-        bytes32[] memory inputs = new bytes32[](7);
+        bytes32[] memory inputs = new bytes32[](9);
         inputs[0] = bytes32(batchId);
         inputs[1] = bytes32(uint256(clearingPrice));
         inputs[2] = bytes32(uint256(buyVolume));
@@ -256,6 +257,12 @@ contract SettlementPhaseTest is Test {
         inputs[4] = bytes32(orderCount);
         inputs[5] = ordersRoot;
         inputs[6] = whitelistRoot;
+        // Fee inputs: use default fee rate 30 bps (0.3%)
+        inputs[7] = bytes32(uint256(30)); // feeRate
+        // Compute protocol fee: (matchedVolume * feeRate) / 10000
+        uint256 matchedVolume = buyVolume < sellVolume ? buyVolume : sellVolume;
+        uint256 protocolFee = (matchedVolume * 30) / 10000;
+        inputs[8] = bytes32(protocolFee);
         return inputs;
     }
 
@@ -468,10 +475,10 @@ contract SettlementPhaseTest is Test {
     function test_settleBatch_revertsInvalidPublicInputs_wrongLength() public {
         _setupSettlePhaseWithOrders();
 
-        // Wrong length (6 instead of 7)
+        // Wrong length (6 instead of 9)
         bytes32[] memory publicInputs = new bytes32[](6);
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "length must be 7"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "length must be 9"));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }

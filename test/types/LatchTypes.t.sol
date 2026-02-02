@@ -104,6 +104,7 @@ contract LatchTypesTest is Test {
             revealDuration: Constants.DEFAULT_REVEAL_DURATION,
             settleDuration: Constants.DEFAULT_SETTLE_DURATION,
             claimDuration: Constants.DEFAULT_CLAIM_DURATION,
+            feeRate: Constants.DEFAULT_FEE_RATE,
             whitelistRoot: Constants.EMPTY_MERKLE_ROOT
         });
 
@@ -112,6 +113,7 @@ contract LatchTypesTest is Test {
         assertEq(config.revealDuration, 1);
         assertEq(config.settleDuration, 1);
         assertEq(config.claimDuration, 10);
+        assertEq(config.feeRate, 30);
         assertEq(config.whitelistRoot, bytes32(0));
     }
 
@@ -124,10 +126,12 @@ contract LatchTypesTest is Test {
             revealDuration: 5,
             settleDuration: 5,
             claimDuration: 50,
+            feeRate: 100,
             whitelistRoot: whitelistRoot
         });
 
         assertEq(uint8(config.mode), 1);
+        assertEq(config.feeRate, 100);
         assertEq(config.whitelistRoot, whitelistRoot);
     }
 
@@ -313,7 +317,9 @@ contract LatchTypesTest is Test {
             totalSellVolume: 500 ether,
             orderCount: 10,
             ordersRoot: keccak256("orders_root"),
-            whitelistRoot: bytes32(0) // Permissionless
+            whitelistRoot: bytes32(0), // Permissionless
+            feeRate: 30,
+            protocolFee: 15 ether // 0.3% of 500 ether matched volume
         });
 
         assertEq(inputs.batchId, 1);
@@ -322,6 +328,8 @@ contract LatchTypesTest is Test {
         assertEq(inputs.totalSellVolume, 500 ether);
         assertEq(inputs.orderCount, 10);
         assertEq(inputs.whitelistRoot, bytes32(0));
+        assertEq(inputs.feeRate, 30);
+        assertEq(inputs.protocolFee, 15 ether);
     }
 
     function test_ProofPublicInputs_compliantMode() public pure {
@@ -334,11 +342,14 @@ contract LatchTypesTest is Test {
             totalSellVolume: 500 ether,
             orderCount: 10,
             ordersRoot: keccak256("orders"),
-            whitelistRoot: whitelistRoot
+            whitelistRoot: whitelistRoot,
+            feeRate: 100,
+            protocolFee: 5 ether // 1% of 500 ether
         });
 
         assertEq(inputs.whitelistRoot, whitelistRoot);
         assertTrue(inputs.whitelistRoot != bytes32(0));
+        assertEq(inputs.feeRate, 100);
     }
 
     // ============ Fuzz Tests ============
@@ -380,6 +391,7 @@ contract LatchTypesTest is Test {
             revealDuration: reveal,
             settleDuration: settle,
             claimDuration: claim,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -410,12 +422,14 @@ contract StorageLayoutTest is Test {
             revealDuration: 20,
             settleDuration: 30,
             claimDuration: 40,
+            feeRate: 50,
             whitelistRoot: keccak256("whitelist")
         });
 
         // Read back values to ensure storage worked
         assertEq(uint8(storedPoolConfig.mode), 1);
         assertEq(storedPoolConfig.commitDuration, 10);
+        assertEq(storedPoolConfig.feeRate, 50);
         assertEq(storedPoolConfig.revealDuration, 20);
         assertEq(storedPoolConfig.settleDuration, 30);
         assertEq(storedPoolConfig.claimDuration, 40);

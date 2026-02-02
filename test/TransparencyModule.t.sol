@@ -76,7 +76,7 @@ contract MockBatchVerifier is IBatchVerifier {
 
     function verify(bytes calldata, bytes32[] calldata publicInputs) external view returns (bool) {
         if (!enabled) revert VerifierDisabled();
-        if (publicInputs.length != 7) revert InvalidPublicInputsLength(7, publicInputs.length);
+        if (publicInputs.length != 9) revert InvalidPublicInputsLength(9, publicInputs.length);
         return true;
     }
 
@@ -85,7 +85,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 7;
+        return 9;
     }
 }
 
@@ -550,6 +550,7 @@ contract TransparencyModuleTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
     }

@@ -26,6 +26,7 @@ remappings = [
     "@uniswap/v4-periphery/=lib/v4-periphery/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",
+    "poseidon-solidity/=lib/poseidon-solidity/contracts/",
 ]
 
 # Build settings

@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Order, Commitment} from "../types/LatchTypes.sol";
 import {Constants} from "../types/Constants.sol";
+import {PoseidonT6} from "poseidon-solidity/PoseidonT6.sol";
 import {
     Latch__CommitmentHashMismatch,
     Latch__ZeroOrderAmount,
@@ -68,15 +69,31 @@ library OrderLib {
         order = Order({amount: amount, limitPrice: limitPrice, trader: commitment.trader, isBuy: isBuy});
     }
 
-    /// @notice Encode an order for merkle tree inclusion
+    /// @notice Encode an order for merkle tree inclusion (legacy keccak256)
     /// @dev Uses ORDER_DOMAIN and tight packing for efficient hashing
     /// @dev NOTE: Does NOT include salt since Order struct doesn't store it
+    /// @dev DEPRECATED: Use encodeAsLeaf() for ZK circuit compatibility
     /// @param order The order to encode
     /// @return The encoded order as bytes32
     function encodeOrder(Order memory order) internal pure returns (bytes32) {
         return keccak256(
             abi.encodePacked(Constants.ORDER_DOMAIN, order.trader, order.amount, order.limitPrice, order.isBuy)
         );
+    }
+
+    /// @notice Encode an order as a merkle leaf using Poseidon
+    /// @dev Uses Poseidon T6 (5 inputs): hash([domain, trader, amount, price, isBuy])
+    /// @dev MUST match Noir's encode_order_as_leaf() exactly for ZK circuit compatibility
+    /// @param order The order to encode
+    /// @return The encoded order as uint256 (Field element)
+    function encodeAsLeaf(Order memory order) internal pure returns (uint256) {
+        return PoseidonT6.hash([
+            Constants.POSEIDON_ORDER_DOMAIN,
+            uint256(uint160(order.trader)),
+            uint256(order.amount),
+            uint256(order.limitPrice),
+            order.isBuy ? uint256(1) : uint256(0)
+        ]);
     }
 
     /// @notice Encode an order with salt for commitment verification

@@ -16,6 +16,8 @@ pragma solidity ^0.8.26;
 ///   [4] │ orderCount      │ bytes32 │ Number of orders in the batch (uint256 cast to bytes32)
 ///   [5] │ ordersRoot      │ bytes32 │ Merkle root of all orders
 ///   [6] │ whitelistRoot   │ bytes32 │ Merkle root of whitelist (0 if PERMISSIONLESS)
+///   [7] │ feeRate         │ bytes32 │ Fee rate in basis points (0-1000, max 10%)
+///   [8] │ protocolFee     │ bytes32 │ Computed protocol fee amount
 /// ```
 ///
 /// The proof verifies that:
@@ -24,6 +26,8 @@ pragma solidity ^0.8.26;
 /// 3. totalBuyVolume and totalSellVolume are computed correctly
 /// 4. The ordersRoot commits to the exact set of orders used
 /// 5. All traders are in the whitelist (if whitelistRoot != 0)
+/// 6. Fee rate is within valid bounds (0-1000 basis points)
+/// 7. Protocol fee is correctly computed from matched volume and fee rate
 interface IBatchVerifier {
     // ============ Events ============
 
@@ -50,10 +54,10 @@ interface IBatchVerifier {
     /// @dev The proof format depends on the ZK backend implementation
     /// @dev Public inputs must be in the exact order specified above
     /// @param proof The ZK proof bytes (format depends on backend)
-    /// @param publicInputs Array of 7 public inputs as bytes32 in the specified order
+    /// @param publicInputs Array of 9 public inputs as bytes32 in the specified order
     /// @return True if the proof is valid
     /// @custom:throws InvalidProof if verification fails
-    /// @custom:throws InvalidPublicInputsLength if publicInputs.length != 7
+    /// @custom:throws InvalidPublicInputsLength if publicInputs.length != 9
     /// @custom:throws VerifierDisabled if verifier is not enabled
     function verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool);
 
@@ -65,7 +69,7 @@ interface IBatchVerifier {
     function isEnabled() external view returns (bool);
 
     /// @notice Get the expected number of public inputs
-    /// @dev Always returns 7 for this protocol
+    /// @dev Always returns 9 for this protocol
     /// @return The number of expected public inputs
     function getPublicInputsCount() external pure returns (uint256);
 }

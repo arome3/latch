@@ -261,19 +261,25 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         if (config.mode == PoolMode.COMPLIANT && config.whitelistRoot == bytes32(0)) {
             revert Latch__ZeroWhitelistRoot();
         }
+
+        // Validate fee rate is within bounds
+        if (config.feeRate > Constants.MAX_FEE_RATE) {
+            revert Latch__InvalidPoolConfig("feeRate exceeds maximum");
+        }
     }
 
     /// @notice Store pool config in packed format
-    /// @dev Packs mode + 4 durations into uint136, stores whitelistRoot separately
+    /// @dev Packs mode + 4 durations + feeRate into uint152, stores whitelistRoot separately
     /// @param poolId The pool identifier
     /// @param config The config to store
     function _storePoolConfig(PoolId poolId, PoolConfig memory config) internal {
-        // Pack: mode(8) | commitDuration(32) | revealDuration(32) | settleDuration(32) | claimDuration(32)
-        uint136 packed = uint136(uint8(config.mode))
-            | (uint136(config.commitDuration) << 8)
-            | (uint136(config.revealDuration) << 40)
-            | (uint136(config.settleDuration) << 72)
-            | (uint136(config.claimDuration) << 104);
+        // Pack: mode(8) | commitDuration(32) | revealDuration(32) | settleDuration(32) | claimDuration(32) | feeRate(16)
+        uint152 packed = uint152(uint8(config.mode))
+            | (uint152(config.commitDuration) << 8)
+            | (uint152(config.revealDuration) << 40)
+            | (uint152(config.settleDuration) << 72)
+            | (uint152(config.claimDuration) << 104)
+            | (uint152(config.feeRate) << 136);
 
         _poolConfigs[poolId] = PoolConfigPacked({
             packed: packed,
@@ -292,6 +298,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         config.revealDuration = uint32(packed.packed >> 40);
         config.settleDuration = uint32(packed.packed >> 72);
         config.claimDuration = uint32(packed.packed >> 104);
+        config.feeRate = uint16(packed.packed >> 136);
         config.whitelistRoot = packed.whitelistRoot;
     }
 
@@ -792,8 +799,8 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         }
 
         // 4. Validate public inputs format
-        if (publicInputs.length != 7) {
-            revert Latch__InvalidPublicInputs("length must be 7");
+        if (publicInputs.length != 9) {
+            revert Latch__InvalidPublicInputs("length must be 9");
         }
 
         // 5. Validate public inputs against on-chain state
@@ -884,6 +891,24 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
             : bytes32(0);
         if (publicInputs[6] != expectedWhitelistRoot) {
             revert Latch__InvalidPublicInputs("whitelistRoot mismatch");
+        }
+
+        // [7] feeRate - must match pool configuration
+        uint256 claimedFeeRate = uint256(publicInputs[7]);
+        if (claimedFeeRate != config.feeRate) {
+            revert Latch__InvalidPublicInputs("feeRate mismatch");
+        }
+
+        // [8] protocolFee - verify computation matches expected value
+        // matched_volume = min(buyVolume, sellVolume)
+        // expected_fee = (matched_volume * fee_rate) / FEE_DENOMINATOR
+        uint256 buyVolume = uint256(publicInputs[2]);
+        uint256 sellVolume = uint256(publicInputs[3]);
+        uint256 matchedVolume = buyVolume < sellVolume ? buyVolume : sellVolume;
+        uint256 expectedFee = (matchedVolume * claimedFeeRate) / Constants.FEE_DENOMINATOR;
+        uint256 claimedFee = uint256(publicInputs[8]);
+        if (claimedFee != expectedFee) {
+            revert Latch__InvalidPublicInputs("protocolFee mismatch");
         }
 
         // Validate clearing price is non-zero if orders exist

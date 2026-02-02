@@ -87,7 +87,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 7;
+        return 9;
     }
 }
 
@@ -200,6 +200,7 @@ contract RevealPhaseTest is Test {
             revealDuration: REVEAL_DURATION,
             settleDuration: SETTLE_DURATION,
             claimDuration: CLAIM_DURATION,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
     }

@@ -444,15 +444,15 @@ contract MockBatchVerifier is IBatchVerifier {
 
     function verify(bytes calldata, bytes32[] calldata publicInputs) external view override returns (bool) {
         if (!isEnabled) revert VerifierDisabled();
-        if (publicInputs.length != 7) {
-            revert InvalidPublicInputsLength(7, publicInputs.length);
+        if (publicInputs.length != 9) {
+            revert InvalidPublicInputsLength(9, publicInputs.length);
         }
         if (!shouldPass) revert InvalidProof();
         return true;
     }
 
     function getPublicInputsCount() external pure override returns (uint256) {
-        return 7;
+        return 9;
     }
 }
 
@@ -520,7 +520,7 @@ contract MockImplementationsTest is Test {
     }
 
     function test_MockBatchVerifier_verify() public view {
-        bytes32[] memory inputs = new bytes32[](7);
+        bytes32[] memory inputs = new bytes32[](9);
         inputs[0] = bytes32(uint256(1)); // batchId
         inputs[1] = bytes32(uint256(1000e18)); // clearingPrice
         inputs[2] = bytes32(uint256(100e18)); // totalBuyVolume
@@ -528,6 +528,8 @@ contract MockImplementationsTest is Test {
         inputs[4] = bytes32(uint256(10)); // orderCount
         inputs[5] = keccak256("orders"); // ordersRoot
         inputs[6] = bytes32(0); // whitelistRoot (permissionless)
+        inputs[7] = bytes32(uint256(30)); // feeRate (0.3%)
+        inputs[8] = bytes32(uint256(3e16)); // protocolFee (0.3% of 100e18)
 
         bool result = verifier.verify("", inputs);
         assertTrue(result);
@@ -536,14 +538,14 @@ contract MockImplementationsTest is Test {
     function test_MockBatchVerifier_revertsOnWrongInputCount() public {
         bytes32[] memory inputs = new bytes32[](5); // Wrong length
 
-        vm.expectRevert(abi.encodeWithSelector(IBatchVerifier.InvalidPublicInputsLength.selector, 7, 5));
+        vm.expectRevert(abi.encodeWithSelector(IBatchVerifier.InvalidPublicInputsLength.selector, 9, 5));
         verifier.verify("", inputs);
     }
 
     function test_MockBatchVerifier_revertsWhenDisabled() public {
         verifier.setEnabled(false);
 
-        bytes32[] memory inputs = new bytes32[](7);
+        bytes32[] memory inputs = new bytes32[](9);
         vm.expectRevert(IBatchVerifier.VerifierDisabled.selector);
         verifier.verify("", inputs);
     }
@@ -551,12 +553,12 @@ contract MockImplementationsTest is Test {
     function test_MockBatchVerifier_revertsOnInvalidProof() public {
         verifier.setShouldPass(false);
 
-        bytes32[] memory inputs = new bytes32[](7);
+        bytes32[] memory inputs = new bytes32[](9);
         vm.expectRevert(IBatchVerifier.InvalidProof.selector);
         verifier.verify("", inputs);
     }
 
     function test_MockBatchVerifier_publicInputsCount() public view {
-        assertEq(verifier.getPublicInputsCount(), 7);
+        assertEq(verifier.getPublicInputsCount(), 9);
     }
 }

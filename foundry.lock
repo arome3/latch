@@ -11,6 +11,12 @@
       "rev": "932fddf69a699a9a80fd2396fd1a2ab91cdda123"
     }
   },
+  "lib/poseidon-solidity": {
+    "tag": {
+      "name": "v0.0.5",
+      "rev": "8205c97ec4a35a9adb854b70b2c9ba92668d1304"
+    }
+  },
   "lib/v4-core": {
     "branch": {
       "name": "main",

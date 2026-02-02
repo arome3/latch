@@ -49,32 +49,34 @@ enum ClaimStatus {
 /// @notice Configuration for a pool's batch auction parameters
 /// @dev Stored once per pool at initialization
 /// @dev Storage: 2 slots
-///      Slot 0: mode(1) + commitDuration(4) + revealDuration(4) + settleDuration(4) + claimDuration(4) = 17 bytes
+///      Slot 0: mode(1) + commitDuration(4) + revealDuration(4) + settleDuration(4) + claimDuration(4) + feeRate(2) = 19 bytes
 ///      Slot 1: whitelistRoot(32) = 32 bytes
 struct PoolConfig {
-    // Slot 0: 17 bytes used (15 bytes padding)
+    // Slot 0: 19 bytes used (13 bytes padding)
     PoolMode mode; // 1 byte
     uint32 commitDuration; // 4 bytes - blocks for commit phase
     uint32 revealDuration; // 4 bytes - blocks for reveal phase
     uint32 settleDuration; // 4 bytes - blocks for settlement phase
     uint32 claimDuration; // 4 bytes - blocks for claim phase
+    uint16 feeRate; // 2 bytes - fee rate in basis points (max 1000 = 10%)
     // Slot 1: 32 bytes
     bytes32 whitelistRoot; // Merkle root for whitelist (0x0 if PERMISSIONLESS)
 }
 
 /// @notice Gas-optimized packed storage for pool configuration
-/// @dev Packs mode + 4 durations into a single uint136 for gas efficiency
+/// @dev Packs mode + 4 durations + feeRate into a single uint152 for gas efficiency
 /// @dev Bit layout of `packed`:
 ///      Bits 0-7:     mode (uint8)
 ///      Bits 8-39:    commitDuration (uint32)
 ///      Bits 40-71:   revealDuration (uint32)
 ///      Bits 72-103:  settleDuration (uint32)
 ///      Bits 104-135: claimDuration (uint32)
+///      Bits 136-151: feeRate (uint16)
 /// @dev Storage: 2 slots
-///      Slot 0: packed(17) = 17 bytes used (15 bytes padding)
+///      Slot 0: packed(19) = 19 bytes used (13 bytes padding)
 ///      Slot 1: whitelistRoot(32) = 32 bytes
 struct PoolConfigPacked {
-    uint136 packed; // mode(8) + commitDuration(32) + revealDuration(32) + settleDuration(32) + claimDuration(32)
+    uint152 packed; // mode(8) + commitDuration(32) + revealDuration(32) + settleDuration(32) + claimDuration(32) + feeRate(16)
     bytes32 whitelistRoot;
 }
 
@@ -181,6 +183,8 @@ struct ProofPublicInputs {
     uint256 orderCount; // number of orders in batch
     bytes32 ordersRoot; // merkle root of all orders
     bytes32 whitelistRoot; // merkle root of whitelist (0 if PERMISSIONLESS)
+    uint256 feeRate; // fee rate in basis points (0-1000)
+    uint256 protocolFee; // computed protocol fee amount
 }
 
 /// @notice Statistics for a settled batch (view-friendly struct)

@@ -89,7 +89,7 @@ contract MockBatchVerifier is IBatchVerifier {
 
     function verify(bytes calldata, bytes32[] calldata publicInputs) external view returns (bool) {
         if (!enabled) revert VerifierDisabled();
-        if (publicInputs.length != 7) revert InvalidPublicInputsLength(7, publicInputs.length);
+        if (publicInputs.length != 9) revert InvalidPublicInputsLength(9, publicInputs.length);
         return true;
     }
 
@@ -98,7 +98,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 7;
+        return 9;
     }
 }
 
@@ -268,6 +268,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: root
         });
 
@@ -294,6 +295,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -308,6 +310,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -322,6 +325,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 0,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -336,6 +340,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 0,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -350,6 +355,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 0,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -364,6 +370,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -378,6 +385,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: Constants.MAX_PHASE_DURATION,
             settleDuration: Constants.MAX_PHASE_DURATION,
             claimDuration: Constants.MAX_PHASE_DURATION,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -394,6 +402,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: Constants.MIN_PHASE_DURATION,
             settleDuration: Constants.MIN_PHASE_DURATION,
             claimDuration: Constants.MIN_PHASE_DURATION,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -568,7 +577,7 @@ contract LatchHookCoreTest is Test {
     }
 
     function test_settleBatch_revertsOnNoBatch() public {
-        bytes32[] memory inputs = new bytes32[](7);
+        bytes32[] memory inputs = new bytes32[](9);
         vm.expectRevert(Latch__NoBatchActive.selector);
         hook.settleBatch(poolKey, "", inputs);
     }
@@ -626,6 +635,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 23456,
             settleDuration: 34567,
             claimDuration: 45678,
+            feeRate: 500,
             whitelistRoot: keccak256("test_root")
         });
 
@@ -638,6 +648,7 @@ contract LatchHookCoreTest is Test {
         assertEq(stored.revealDuration, 23456);
         assertEq(stored.settleDuration, 34567);
         assertEq(stored.claimDuration, 45678);
+        assertEq(stored.feeRate, 500);
         assertEq(stored.whitelistRoot, keccak256("test_root"));
     }
 
@@ -650,6 +661,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: maxDuration,
             settleDuration: maxDuration,
             claimDuration: maxDuration,
+            feeRate: Constants.MAX_FEE_RATE,
             whitelistRoot: bytes32(0)
         });
 
@@ -661,6 +673,7 @@ contract LatchHookCoreTest is Test {
         assertEq(stored.revealDuration, maxDuration);
         assertEq(stored.settleDuration, maxDuration);
         assertEq(stored.claimDuration, maxDuration);
+        assertEq(stored.feeRate, Constants.MAX_FEE_RATE);
     }
 
     // ============ Fuzz Tests ============
@@ -683,6 +696,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: revealDuration,
             settleDuration: settleDuration,
             claimDuration: claimDuration,
+            feeRate: 30,
             whitelistRoot: bytes32(0)
         });
 
@@ -721,6 +735,7 @@ contract LatchHookCoreTest is Test {
             revealDuration: 10,
             settleDuration: 10,
             claimDuration: 100,
+            feeRate: 30,
             whitelistRoot: mode == PoolMode.COMPLIANT ? keccak256("whitelist") : bytes32(0)
         });
     }

@@ -2,22 +2,60 @@
 pragma solidity ^0.8.26;
 
 import {Latch__InvalidMerkleProof} from "../types/Errors.sol";
+import {PoseidonLib} from "./PoseidonLib.sol";
 
 /// @title MerkleLib
 /// @notice Library for merkle tree construction and verification
-/// @dev Implements index-based binary merkle tree (NOT sorted hashing)
-/// @dev CRITICAL: Must match Noir's std::merkle::compute_merkle_root which uses index-based positioning
+/// @dev Implements SORTED hashing using Poseidon for ZK circuit compatibility
+/// @dev CRITICAL: Must match Noir's merkle module which uses sorted hashing
 ///
-/// ## Why Index-Based (Not Sorted) Hashing?
+/// ## Why Sorted Hashing?
 ///
-/// Sorted hashing: hash(min(a,b), max(a,b)) - deterministic but loses position info
-/// Index-based:    index % 2 == 0 ? hash(node, sibling) : hash(sibling, node)
+/// Sorted hashing: hash(min(a,b), max(a,b)) - commutative, simpler proofs
+/// Index-based:    hash order depends on position - requires index tracking
 ///
-/// Noir's stdlib uses index-based verification, so Solidity must match exactly.
-/// Using sorted hashing would cause proof verification to fail across the two systems.
+/// Sorted hashing eliminates the need for index arrays in proofs, simplifying
+/// the proof structure while maintaining security.
+///
+/// ## Dual Implementation
+///
+/// This library provides both:
+/// 1. Poseidon-based functions (for ZK circuit compatibility)
+/// 2. keccak256-based functions (legacy, for backward compatibility)
 library MerkleLib {
-    /// @notice Compute the merkle root of a set of leaves
+    // ============ Poseidon-based Functions (ZK Circuit Compatible) ============
+
+    /// @notice Compute the merkle root of a set of leaves using Poseidon
+    /// @dev Delegates to PoseidonLib.computeRoot()
+    /// @param leaves Array of leaf hashes (as uint256)
+    /// @return root The merkle root
+    function computeRootPoseidon(uint256[] memory leaves) internal pure returns (uint256 root) {
+        return PoseidonLib.computeRoot(leaves);
+    }
+
+    /// @notice Verify a merkle proof using Poseidon sorted hashing
+    /// @dev Delegates to PoseidonLib.verifyProof()
+    /// @param root The expected merkle root
+    /// @param leaf The leaf to verify
+    /// @param proof The merkle proof (sibling hashes from leaf to root)
+    /// @return True if the proof is valid
+    function verifyPoseidon(uint256 root, uint256 leaf, uint256[] memory proof) internal pure returns (bool) {
+        return PoseidonLib.verifyProof(root, leaf, proof);
+    }
+
+    /// @notice Verify a Poseidon merkle proof and revert if invalid
+    /// @param root The expected merkle root
+    /// @param leaf The leaf to verify
+    /// @param proof The merkle proof
+    function verifyPoseidonOrRevert(uint256 root, uint256 leaf, uint256[] memory proof) internal pure {
+        PoseidonLib.verifyProofOrRevert(root, leaf, proof);
+    }
+
+    // ============ Legacy keccak256-based Functions ============
+
+    /// @notice Compute the merkle root of a set of leaves using keccak256
     /// @dev Pads with zero hashes if not a power of 2
+    /// @dev DEPRECATED: Use computeRootPoseidon() for ZK circuit compatibility
     /// @param leaves Array of leaf hashes
     /// @return root The merkle root
     function computeRoot(bytes32[] memory leaves) internal pure returns (bytes32 root) {
@@ -56,8 +94,9 @@ library MerkleLib {
         return layer[0];
     }
 
-    /// @notice Verify a merkle proof using index-based positioning
-    /// @dev CRITICAL: Uses index % 2 to determine left/right position (matches Noir stdlib)
+    /// @notice Verify a merkle proof using index-based positioning (keccak256)
+    /// @dev CRITICAL: Uses index % 2 to determine left/right position
+    /// @dev DEPRECATED: Use verifyPoseidon() for ZK circuit compatibility
     /// @param root The expected merkle root
     /// @param leaf The leaf to verify
     /// @param proof The merkle proof (sibling hashes from leaf to root)
@@ -95,7 +134,7 @@ library MerkleLib {
         }
     }
 
-    /// @notice Generate a merkle proof for a leaf
+    /// @notice Generate a merkle proof for a leaf (keccak256)
     /// @dev Used for off-chain proof generation in tests
     /// @param leaves All leaves in the tree
     /// @param index Index of the leaf to prove
@@ -140,7 +179,9 @@ library MerkleLib {
         return proof;
     }
 
-    /// @notice Hash two nodes in fixed order (NOT sorted)
+    // ============ Internal Helper Functions ============
+
+    /// @notice Hash two nodes in fixed order (NOT sorted) for keccak256
     /// @dev CRITICAL: This is intentionally NOT sorted - order matters for index-based proofs
     /// @dev Left child is always first, right child is always second
     /// @param left Left child node
