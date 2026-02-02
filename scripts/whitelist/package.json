@@ -1,0 +1,19 @@
+{
+  "name": "@latch/whitelist-tools",
+  "version": "1.0.0",
+  "description": "Merkle tree generation and proof tools for Latch whitelist verification",
+  "type": "module",
+  "scripts": {
+    "generate": "npx tsx generate-tree.ts",
+    "proof": "npx tsx get-proof.ts",
+    "verify": "npx tsx verify-proof.ts"
+  },
+  "dependencies": {
+    "viem": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

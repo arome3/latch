@@ -1,0 +1,68 @@
+# =============================================================================
+# Latch Batch Verifier - Example Prover Inputs
+# =============================================================================
+# Copy this file to Prover.toml and fill in actual values for proving.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Public Inputs
+# -----------------------------------------------------------------------------
+
+# Unique batch identifier
+batch_id = "1"
+
+# Clearing price (scaled by 1e18, e.g., "1000000000000000000" = 1.0)
+clearing_price = "1000000000000000000"
+
+# Merkle root of all orders in the batch
+orders_root = "0x1234567890abcdef"
+
+# Total filled amount across all orders
+total_filled = "300"
+
+# -----------------------------------------------------------------------------
+# Private Inputs
+# -----------------------------------------------------------------------------
+
+# Number of active orders in this batch (u32)
+order_count = 3
+
+# Order hashes (array of 16 Field elements, unused slots are 0)
+order_hashes = [
+    "0x1111111111111111",
+    "0x2222222222222222",
+    "0x3333333333333333",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0"
+]
+
+# Fill amounts per order (array of 16 Field elements, unused slots are 0)
+fill_amounts = [
+    "100",
+    "100",
+    "100",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "0"
+]

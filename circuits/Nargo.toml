@@ -1,0 +1,6 @@
+[package]
+name = "batch_verifier"
+type = "bin"
+authors = ["Latch Protocol"]
+
+[dependencies]
