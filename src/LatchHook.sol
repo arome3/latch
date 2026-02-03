@@ -67,6 +67,7 @@ import {BatchLib} from "./libraries/BatchLib.sol";
 import {MerkleLib} from "./libraries/MerkleLib.sol";
 import {OrderLib} from "./libraries/OrderLib.sol";
 import {ClearingPriceLib} from "./libraries/ClearingPriceLib.sol";
+import {PoseidonLib} from "./libraries/PoseidonLib.sol";
 
 /// @title LatchHook
 /// @notice Uniswap v4 hook implementing ZK-verified batch auctions
@@ -917,18 +918,23 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         }
     }
 
-    /// @notice Compute Merkle root of revealed orders
+    /// @notice Compute Merkle root of revealed orders using Poseidon hashing
+    /// @dev CRITICAL: Uses Poseidon for ZK circuit compatibility
+    /// @dev Must match Noir's compute_orders_root() exactly
     /// @param orders Storage reference to orders array
-    /// @return The Merkle root of all orders
+    /// @return The Merkle root of all orders (as bytes32)
     function _computeOrdersRoot(Order[] storage orders) internal view returns (bytes32) {
         uint256 len = orders.length;
         if (len == 0) return bytes32(0);
 
-        bytes32[] memory leaves = new bytes32[](len);
+        // Encode each order as a Poseidon leaf (matches Noir's encode_order_as_field)
+        uint256[] memory leaves = new uint256[](len);
         for (uint256 i = 0; i < len; i++) {
-            leaves[i] = OrderLib.encodeOrder(orders[i]);
+            leaves[i] = OrderLib.encodeAsLeaf(orders[i]);
         }
-        return MerkleLib.computeRoot(leaves);
+
+        // Compute root using Poseidon sorted hashing (matches Noir's merkle module)
+        return bytes32(PoseidonLib.computeRoot(leaves));
     }
 
     /// @notice Execute settlement by computing claimable amounts for each trader

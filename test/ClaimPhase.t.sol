@@ -30,6 +30,7 @@ import {BaseHook} from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
 import {ERC20Mock} from "./mocks/ERC20Mock.sol";
 import {OrderLib} from "../src/libraries/OrderLib.sol";
 import {MerkleLib} from "../src/libraries/MerkleLib.sol";
+import {PoseidonLib} from "../src/libraries/PoseidonLib.sol";
 
 /// @title MockPoolManager for claim phase tests
 contract MockPoolManager {
@@ -225,14 +226,15 @@ contract ClaimPhaseTest is Test {
         ));
     }
 
-    /// @notice Compute orders root for public inputs
+    /// @notice Compute orders root for public inputs using Poseidon hashing
+    /// @dev CRITICAL: Must match LatchHook._computeOrdersRoot() which uses Poseidon
     function _computeOrdersRoot(Order[] memory orders) internal pure returns (bytes32) {
         if (orders.length == 0) return bytes32(0);
-        bytes32[] memory leaves = new bytes32[](orders.length);
+        uint256[] memory leaves = new uint256[](orders.length);
         for (uint256 i = 0; i < orders.length; i++) {
-            leaves[i] = OrderLib.encodeOrder(orders[i]);
+            leaves[i] = OrderLib.encodeAsLeaf(orders[i]);
         }
-        return MerkleLib.computeRoot(leaves);
+        return bytes32(PoseidonLib.computeRoot(leaves));
     }
 
     /// @notice Build valid public inputs for settlement

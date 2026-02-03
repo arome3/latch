@@ -33,6 +33,7 @@ import {BaseHook} from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
 import {ERC20Mock} from "./mocks/ERC20Mock.sol";
 import {OrderLib} from "../src/libraries/OrderLib.sol";
 import {MerkleLib} from "../src/libraries/MerkleLib.sol";
+import {PoseidonLib} from "../src/libraries/PoseidonLib.sol";
 
 /// @title MockPoolManager for settlement phase tests
 contract MockPoolManager {
@@ -229,14 +230,15 @@ contract SettlementPhaseTest is Test {
         ));
     }
 
-    /// @notice Compute orders root for public inputs
+    /// @notice Compute orders root for public inputs using Poseidon hashing
+    /// @dev CRITICAL: Must match LatchHook._computeOrdersRoot() which uses Poseidon
     function _computeOrdersRoot(Order[] memory orders) internal pure returns (bytes32) {
         if (orders.length == 0) return bytes32(0);
-        bytes32[] memory leaves = new bytes32[](orders.length);
+        uint256[] memory leaves = new uint256[](orders.length);
         for (uint256 i = 0; i < orders.length; i++) {
-            leaves[i] = OrderLib.encodeOrder(orders[i]);
+            leaves[i] = OrderLib.encodeAsLeaf(orders[i]);
         }
-        return MerkleLib.computeRoot(leaves);
+        return bytes32(PoseidonLib.computeRoot(leaves));
     }
 
     /// @notice Build valid public inputs for settlement
@@ -609,8 +611,9 @@ contract SettlementPhaseTest is Test {
         // Log gas usage
         emit log_named_uint("Gas used for settleBatch (2 orders)", gasUsed);
 
-        // Sanity check - should be less than 500k gas
-        assertLt(gasUsed, 500_000, "Gas usage should be reasonable");
+        // Sanity check - Poseidon hashing is expensive (~300K per hash)
+        // With 2 orders: ~600K for encoding + ~300K for merkle = ~1.5M total
+        assertLt(gasUsed, 2_000_000, "Gas usage should be reasonable for Poseidon");
     }
 
     function test_settleBatch_proRataAllocation() public {
