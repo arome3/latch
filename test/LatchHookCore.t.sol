@@ -32,6 +32,7 @@ import {
     Latch__ZeroCommitmentHash,
     Latch__NoBatchActive
 } from "../src/types/Errors.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {MerkleLib} from "../src/libraries/MerkleLib.sol";
 
 /// @title MockPoolManager
@@ -108,8 +109,9 @@ contract TestLatchHook is LatchHook {
     constructor(
         IPoolManager _poolManager,
         IWhitelistRegistry _whitelistRegistry,
-        IBatchVerifier _batchVerifier
-    ) LatchHook(_poolManager, _whitelistRegistry, _batchVerifier) {}
+        IBatchVerifier _batchVerifier,
+        address _owner
+    ) LatchHook(_poolManager, _whitelistRegistry, _batchVerifier, _owner) {}
 
     /// @notice Override to skip hook address validation for testing
     function validateHookAddress(BaseHook) internal pure override {
@@ -141,11 +143,12 @@ contract LatchHookCoreTest is Test {
         whitelistRegistry = new MockWhitelistRegistry();
         batchVerifier = new MockBatchVerifier();
 
-        // Deploy test hook
+        // Deploy test hook with this contract as owner
         hook = new TestLatchHook(
             IPoolManager(address(poolManager)),
             IWhitelistRegistry(address(whitelistRegistry)),
-            IBatchVerifier(address(batchVerifier))
+            IBatchVerifier(address(batchVerifier)),
+            address(this)
         );
 
         // Create test currencies
@@ -176,7 +179,8 @@ contract LatchHookCoreTest is Test {
         new TestLatchHook(
             IPoolManager(address(poolManager)),
             IWhitelistRegistry(address(0)),
-            IBatchVerifier(address(batchVerifier))
+            IBatchVerifier(address(batchVerifier)),
+            address(this)
         );
     }
 
@@ -185,8 +189,24 @@ contract LatchHookCoreTest is Test {
         new TestLatchHook(
             IPoolManager(address(poolManager)),
             IWhitelistRegistry(address(whitelistRegistry)),
-            IBatchVerifier(address(0))
+            IBatchVerifier(address(0)),
+            address(this)
         );
+    }
+
+    function test_constructor_revertsOnZeroOwner() public {
+        // OpenZeppelin's Ownable throws OwnableInvalidOwner for zero address
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
+        new TestLatchHook(
+            IPoolManager(address(poolManager)),
+            IWhitelistRegistry(address(whitelistRegistry)),
+            IBatchVerifier(address(batchVerifier)),
+            address(0)
+        );
+    }
+
+    function test_constructor_setsOwner() public view {
+        assertEq(hook.owner(), address(this));
     }
 
     // ============ Hook Permissions Tests ============

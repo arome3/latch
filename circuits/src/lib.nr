@@ -61,6 +61,10 @@ pub mod pro_rata;
 #[cfg(test)]
 mod tests;
 
+/// Test vectors for cross-system hash verification
+#[cfg(test)]
+mod test_vectors;
+
 // =============================================================================
 // Re-exports for convenient access
 // =============================================================================

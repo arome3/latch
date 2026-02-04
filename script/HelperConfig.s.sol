@@ -11,6 +11,7 @@ contract HelperConfig is Script {
         address poolManager;
         address whitelistRegistry;
         address batchVerifier;
+        address hookOwner;
         address create2Deployer;
         uint256 deployerKey;
         uint24 defaultFee;
@@ -47,6 +48,7 @@ contract HelperConfig is Script {
             poolManager: MAINNET_POOL_MANAGER,
             whitelistRegistry: address(0), // TODO: Add when deployed
             batchVerifier: address(0), // TODO: Add when deployed
+            hookOwner: vm.envAddress("HOOK_OWNER"),
             create2Deployer: CREATE2_DEPLOYER,
             deployerKey: vm.envUint("DEPLOYER_PRIVATE_KEY"),
             defaultFee: 3000, // 0.3%
@@ -60,6 +62,7 @@ contract HelperConfig is Script {
             poolManager: SEPOLIA_POOL_MANAGER,
             whitelistRegistry: address(0), // TODO: Add when deployed
             batchVerifier: address(0), // TODO: Add when deployed
+            hookOwner: vm.envAddress("HOOK_OWNER"),
             create2Deployer: CREATE2_DEPLOYER,
             deployerKey: vm.envUint("DEPLOYER_PRIVATE_KEY"),
             defaultFee: 3000,
@@ -71,10 +74,12 @@ contract HelperConfig is Script {
     function getAnvilConfig() public pure returns (NetworkConfig memory) {
         // For Anvil, we'll deploy mock contracts
         // The actual addresses will be determined at runtime
+        // Anvil account #0 address: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
         return NetworkConfig({
             poolManager: address(0), // Will be deployed
             whitelistRegistry: address(0), // Will be deployed
             batchVerifier: address(0), // Will be deployed
+            hookOwner: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266, // Anvil account #0
             create2Deployer: CREATE2_DEPLOYER,
             deployerKey: ANVIL_DEFAULT_KEY,
             defaultFee: 3000,

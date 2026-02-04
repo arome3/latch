@@ -13,6 +13,7 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
 // OpenZeppelin imports
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -20,6 +21,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ILatchHook} from "./interfaces/ILatchHook.sol";
 import {IWhitelistRegistry} from "./interfaces/IWhitelistRegistry.sol";
 import {IBatchVerifier} from "./interfaces/IBatchVerifier.sol";
+import {IAuditAccessModule} from "./interfaces/IAuditAccessModule.sol";
+import {ISolverRegistry} from "./interfaces/ISolverRegistry.sol";
 import {
     PoolMode,
     BatchPhase,
@@ -61,23 +64,40 @@ import {
     Latch__NothingToClaim,
     Latch__ClaimPhaseNotEnded,
     Latch__InvalidProof,
-    Latch__InvalidPublicInputs
+    Latch__InvalidPublicInputs,
+    Latch__OperationPaused,
+    Latch__NotAuthorizedSolver
 } from "./types/Errors.sol";
 import {BatchLib} from "./libraries/BatchLib.sol";
 import {MerkleLib} from "./libraries/MerkleLib.sol";
 import {OrderLib} from "./libraries/OrderLib.sol";
 import {ClearingPriceLib} from "./libraries/ClearingPriceLib.sol";
 import {PoseidonLib} from "./libraries/PoseidonLib.sol";
+import {PauseFlagsLib} from "./libraries/PauseFlagsLib.sol";
 
 /// @title LatchHook
 /// @notice Uniswap v4 hook implementing ZK-verified batch auctions
 /// @dev Implements commit-reveal batch auctions with ZK proof settlement
 /// @dev Hook permissions: beforeInitialize, beforeSwap, beforeSwapReturnDelta
-contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
+contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     using PoolIdLibrary for PoolKey;
     using BatchLib for Batch;
     using CurrencyLibrary for Currency;
     using SafeERC20 for IERC20;
+
+    // ============ Audit Data Struct ============
+
+    /// @notice Data for encrypted audit storage in COMPLIANT pools
+    /// @dev Passed to settleBatchWithAudit for audit trail
+    struct AuditData {
+        bytes encryptedOrders;   // AES-256-GCM encrypted order data
+        bytes encryptedFills;    // AES-256-GCM encrypted fill data
+        bytes32 ordersHash;      // Hash of plaintext orders
+        bytes32 fillsHash;       // Hash of plaintext fills
+        bytes32 keyHash;         // Hash of encryption key
+        bytes16 iv;              // Initialization vector for AES-GCM
+        uint64 orderCount;       // Number of orders in batch
+    }
 
     // ============ Immutables ============
 
@@ -88,6 +108,13 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
     IBatchVerifier public immutable batchVerifier;
 
     // ============ Storage ============
+
+    /// @notice Audit access module for COMPLIANT pools (optional)
+    IAuditAccessModule public auditAccessModule;
+
+    /// @notice Solver registry for multi-solver support (optional)
+    /// @dev If not set (address(0)), settlement is permissionless
+    ISolverRegistry public solverRegistry;
 
     /// @notice Packed pool configurations: PoolId => PoolConfigPacked
     mapping(PoolId => PoolConfigPacked) internal _poolConfigs;
@@ -117,22 +144,176 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
     /// @notice Settled batch data for transparency: PoolId => batchId => SettledBatchData
     mapping(PoolId => mapping(uint256 => SettledBatchData)) internal _settledBatches;
 
+    /// @notice Packed pause flags for emergency controls
+    /// @dev Uses PauseFlagsLib for bit-packed operations (6 flags in 1 byte)
+    uint8 internal _pauseFlags;
+
+    // ============ Events ============
+
+    /// @notice Emitted when pause flags are updated
+    /// @param newFlags The new packed pause flags
+    event PauseFlagsUpdated(uint8 newFlags);
+
+    // ============ Modifiers ============
+
+    /// @notice Revert if commit operations are paused
+    modifier whenCommitNotPaused() {
+        if (PauseFlagsLib.isCommitPaused(_pauseFlags)) {
+            revert Latch__OperationPaused("commit");
+        }
+        _;
+    }
+
+    /// @notice Revert if reveal operations are paused
+    modifier whenRevealNotPaused() {
+        if (PauseFlagsLib.isRevealPaused(_pauseFlags)) {
+            revert Latch__OperationPaused("reveal");
+        }
+        _;
+    }
+
+    /// @notice Revert if settle operations are paused
+    modifier whenSettleNotPaused() {
+        if (PauseFlagsLib.isSettlePaused(_pauseFlags)) {
+            revert Latch__OperationPaused("settle");
+        }
+        _;
+    }
+
+    /// @notice Revert if claim operations are paused
+    modifier whenClaimNotPaused() {
+        if (PauseFlagsLib.isClaimPaused(_pauseFlags)) {
+            revert Latch__OperationPaused("claim");
+        }
+        _;
+    }
+
+    /// @notice Revert if withdraw operations are paused
+    modifier whenWithdrawNotPaused() {
+        if (PauseFlagsLib.isWithdrawPaused(_pauseFlags)) {
+            revert Latch__OperationPaused("withdraw");
+        }
+        _;
+    }
+
     // ============ Constructor ============
 
     /// @notice Create a new LatchHook
     /// @param _poolManager The Uniswap v4 pool manager
     /// @param _whitelistRegistry The whitelist registry for COMPLIANT mode
     /// @param _batchVerifier The ZK batch verifier
+    /// @param _owner The initial owner address for admin functions
     constructor(
         IPoolManager _poolManager,
         IWhitelistRegistry _whitelistRegistry,
-        IBatchVerifier _batchVerifier
-    ) BaseHook(_poolManager) {
+        IBatchVerifier _batchVerifier,
+        address _owner
+    ) BaseHook(_poolManager) Ownable(_owner) {
         if (address(_whitelistRegistry) == address(0)) revert Latch__ZeroAddress();
         if (address(_batchVerifier) == address(0)) revert Latch__ZeroAddress();
+        if (_owner == address(0)) revert Latch__ZeroAddress();
 
         whitelistRegistry = _whitelistRegistry;
         batchVerifier = _batchVerifier;
+    }
+
+    // ============ Admin Functions ============
+
+    /// @notice Set the audit access module for COMPLIANT pools
+    /// @dev Can only be set once by the owner. Pass address(0) to disable audit integration.
+    /// @param _module The audit access module address
+    function setAuditAccessModule(address _module) external onlyOwner {
+        // Only allow setting if not already set (one-time configuration)
+        if (address(auditAccessModule) != address(0)) {
+            revert Latch__PoolAlreadyInitialized(); // Reusing error for "already set"
+        }
+        auditAccessModule = IAuditAccessModule(_module);
+    }
+
+    /// @notice Set the solver registry for multi-solver support
+    /// @dev Can be updated by owner. Pass address(0) to disable solver restrictions.
+    /// @param _registry The solver registry address
+    function setSolverRegistry(address _registry) external onlyOwner {
+        solverRegistry = ISolverRegistry(_registry);
+    }
+
+    // ============ Pause Admin Functions ============
+
+    /// @notice Pause all operations (emergency shutdown)
+    /// @dev Sets the ALL_BIT flag which overrides individual pause flags
+    function pauseAll() external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setAllPaused(_pauseFlags, true);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Unpause all operations
+    /// @dev Clears the ALL_BIT flag. Individual pause flags may still be set.
+    function unpauseAll() external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setAllPaused(_pauseFlags, false);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Set commit operations pause state
+    /// @param paused Whether to pause commit operations
+    function setCommitPaused(bool paused) external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setCommitPaused(_pauseFlags, paused);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Set reveal operations pause state
+    /// @param paused Whether to pause reveal operations
+    function setRevealPaused(bool paused) external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setRevealPaused(_pauseFlags, paused);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Set settle operations pause state
+    /// @param paused Whether to pause settle operations
+    function setSettlePaused(bool paused) external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setSettlePaused(_pauseFlags, paused);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Set claim operations pause state
+    /// @param paused Whether to pause claim operations
+    function setClaimPaused(bool paused) external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setClaimPaused(_pauseFlags, paused);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Set withdraw operations pause state
+    /// @param paused Whether to pause withdraw (refund) operations
+    function setWithdrawPaused(bool paused) external onlyOwner {
+        _pauseFlags = PauseFlagsLib.setWithdrawPaused(_pauseFlags, paused);
+        emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Get current pause flags (unpacked for readability)
+    /// @return commitPaused Whether commit is paused
+    /// @return revealPaused Whether reveal is paused
+    /// @return settlePaused Whether settle is paused
+    /// @return claimPaused Whether claim is paused
+    /// @return withdrawPaused Whether withdraw is paused
+    /// @return allPaused Whether all operations are paused
+    function getPauseFlags()
+        external
+        view
+        returns (
+            bool commitPaused,
+            bool revealPaused,
+            bool settlePaused,
+            bool claimPaused,
+            bool withdrawPaused,
+            bool allPaused
+        )
+    {
+        return PauseFlagsLib.unpack(_pauseFlags);
+    }
+
+    /// @notice Get raw packed pause flags
+    /// @return The packed uint8 pause flags
+    function getRawPauseFlags() external view returns (uint8) {
+        return _pauseFlags;
     }
 
     // ============ Hook Permissions ============
@@ -194,6 +375,11 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
 
         // Store packed config
         _storePoolConfig(poolId, config);
+
+        // Register pool operator with audit module for COMPLIANT pools
+        if (config.mode == PoolMode.COMPLIANT && address(auditAccessModule) != address(0)) {
+            auditAccessModule.setPoolOperator(PoolId.unwrap(poolId), msg.sender);
+        }
 
         // Emit event
         emit PoolConfigured(poolId, config.mode, config);
@@ -642,7 +828,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         bytes32 commitmentHash,
         uint96 depositAmount,
         bytes32[] calldata whitelistProof
-    ) external payable override nonReentrant {
+    ) external payable override nonReentrant whenCommitNotPaused {
         // 1. Validate inputs
         if (commitmentHash == bytes32(0)) {
             revert Latch__ZeroCommitmentHash();
@@ -717,7 +903,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         uint128 limitPrice,
         bool isBuy,
         bytes32 salt
-    ) external override nonReentrant {
+    ) external override nonReentrant whenRevealNotPaused {
         PoolId poolId = key.toId();
 
         // 1. Get current batch and verify REVEAL phase
@@ -777,7 +963,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
         PoolKey calldata key,
         bytes calldata proof,
         bytes32[] calldata publicInputs
-    ) external override nonReentrant {
+    ) external override nonReentrant whenSettleNotPaused {
         PoolId poolId = key.toId();
 
         // 1. Get current batch ID
@@ -799,33 +985,41 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
             revert Latch__BatchAlreadySettled();
         }
 
-        // 4. Validate public inputs format
+        // 4. Check solver authorization (if registry is set)
+        if (address(solverRegistry) != address(0)) {
+            // settlePhaseStart = revealEndBlock + 1
+            if (!solverRegistry.canSettle(msg.sender, batch.revealEndBlock + 1)) {
+                revert Latch__NotAuthorizedSolver(msg.sender);
+            }
+        }
+
+        // 5. Validate public inputs format
         if (publicInputs.length != 9) {
             revert Latch__InvalidPublicInputs("length must be 9");
         }
 
-        // 5. Validate public inputs against on-chain state
+        // 6. Validate public inputs against on-chain state
         _validatePublicInputs(poolId, batchId, batch, publicInputs);
 
-        // 6. Verify ZK proof
+        // 7. Verify ZK proof
         if (!batchVerifier.verify(proof, publicInputs)) {
             revert Latch__InvalidProof();
         }
 
-        // 7. Execute settlement - compute clearing price and store claimable amounts
+        // 8. Execute settlement - compute clearing price and store claimable amounts
         Order[] storage orders = _revealedOrders[poolId][batchId];
         (uint128 clearingPrice, uint128 buyVolume, uint128 sellVolume) =
             ClearingPriceLib.computeClearingPrice(_ordersToMemory(orders));
 
         _executeSettlement(poolId, batchId, orders, clearingPrice);
 
-        // 8. Compute orders root
+        // 9. Compute orders root
         bytes32 ordersRoot = _computeOrdersRoot(orders);
 
-        // 9. Update batch state using BatchLib
+        // 10. Update batch state using BatchLib
         batch.settle(clearingPrice, buyVolume, sellVolume, ordersRoot);
 
-        // 10. Store settled batch data for transparency
+        // 11. Store settled batch data for transparency
         _settledBatches[poolId][batchId] = SettledBatchData({
             batchId: batchId,
             clearingPrice: clearingPrice,
@@ -836,8 +1030,145 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
             settledAt: uint64(block.number)
         });
 
-        // 11. Emit event
+        // 12. Record settlement in solver registry (if set)
+        if (address(solverRegistry) != address(0)) {
+            solverRegistry.recordSettlement(msg.sender, true);
+        }
+
+        // 13. Emit event
         emit BatchSettled(poolId, batchId, clearingPrice, buyVolume, sellVolume, ordersRoot);
+    }
+
+    /// @notice Settle a batch with encrypted audit data for COMPLIANT pools
+    /// @dev Same as settleBatch but stores encrypted order/fill data for audit access
+    /// @param key The pool key
+    /// @param proof The ZK proof bytes
+    /// @param publicInputs The public inputs for verification
+    /// @param auditData The encrypted audit data to store
+    function settleBatchWithAudit(
+        PoolKey calldata key,
+        bytes calldata proof,
+        bytes32[] calldata publicInputs,
+        AuditData calldata auditData
+    ) external nonReentrant whenSettleNotPaused {
+        // Execute core settlement (same as settleBatch)
+        (PoolId poolId, uint256 batchId, uint128 clearingPrice, uint128 buyVolume, uint128 sellVolume, bytes32 ordersRoot)
+            = _executeSettlementCore(key, proof, publicInputs);
+
+        // Store audit data for COMPLIANT pools
+        _storeAuditData(poolId, batchId, auditData);
+
+        // Emit event
+        emit BatchSettled(poolId, batchId, clearingPrice, buyVolume, sellVolume, ordersRoot);
+    }
+
+    /// @notice Internal function to execute core settlement logic
+    /// @dev Extracted to reduce stack depth in settleBatchWithAudit
+    function _executeSettlementCore(
+        PoolKey calldata key,
+        bytes calldata proof,
+        bytes32[] calldata publicInputs
+    ) internal returns (
+        PoolId poolId,
+        uint256 batchId,
+        uint128 clearingPrice,
+        uint128 buyVolume,
+        uint128 sellVolume,
+        bytes32 ordersRoot
+    ) {
+        poolId = key.toId();
+
+        // Get current batch ID
+        batchId = _currentBatchId[poolId];
+        if (batchId == 0) {
+            revert Latch__NoBatchActive();
+        }
+
+        Batch storage batch = _batches[poolId][batchId];
+
+        // Verify SETTLE phase
+        BatchPhase phase = batch.getPhase();
+        if (phase != BatchPhase.SETTLE) {
+            revert Latch__WrongPhase(uint8(BatchPhase.SETTLE), uint8(phase));
+        }
+
+        // Check not already settled
+        if (batch.settled) {
+            revert Latch__BatchAlreadySettled();
+        }
+
+        // Check solver authorization (if registry is set)
+        if (address(solverRegistry) != address(0)) {
+            // settlePhaseStart = revealEndBlock + 1
+            if (!solverRegistry.canSettle(msg.sender, batch.revealEndBlock + 1)) {
+                revert Latch__NotAuthorizedSolver(msg.sender);
+            }
+        }
+
+        // Validate public inputs format
+        if (publicInputs.length != 9) {
+            revert Latch__InvalidPublicInputs("length must be 9");
+        }
+
+        // Validate public inputs against on-chain state
+        _validatePublicInputs(poolId, batchId, batch, publicInputs);
+
+        // Verify ZK proof
+        if (!batchVerifier.verify(proof, publicInputs)) {
+            revert Latch__InvalidProof();
+        }
+
+        // Execute settlement - compute clearing price and store claimable amounts
+        Order[] storage orders = _revealedOrders[poolId][batchId];
+        (clearingPrice, buyVolume, sellVolume) =
+            ClearingPriceLib.computeClearingPrice(_ordersToMemory(orders));
+
+        _executeSettlement(poolId, batchId, orders, clearingPrice);
+
+        // Compute orders root
+        ordersRoot = _computeOrdersRoot(orders);
+
+        // Update batch state using BatchLib
+        batch.settle(clearingPrice, buyVolume, sellVolume, ordersRoot);
+
+        // Record settlement in solver registry (if set)
+        if (address(solverRegistry) != address(0)) {
+            solverRegistry.recordSettlement(msg.sender, true);
+        }
+
+        // Store settled batch data for transparency
+        _settledBatches[poolId][batchId] = SettledBatchData({
+            batchId: batchId,
+            clearingPrice: clearingPrice,
+            totalBuyVolume: buyVolume,
+            totalSellVolume: sellVolume,
+            orderCount: uint32(orders.length),
+            ordersRoot: ordersRoot,
+            settledAt: uint64(block.number)
+        });
+    }
+
+    /// @notice Internal function to store audit data
+    /// @dev Extracted to reduce stack depth
+    function _storeAuditData(
+        PoolId poolId,
+        uint256 batchId,
+        AuditData calldata auditData
+    ) internal {
+        PoolConfig memory config = _getPoolConfig(poolId);
+        if (config.mode == PoolMode.COMPLIANT && address(auditAccessModule) != address(0)) {
+            auditAccessModule.storeEncryptedBatchData(
+                PoolId.unwrap(poolId),
+                uint64(batchId),
+                auditData.encryptedOrders,
+                auditData.encryptedFills,
+                auditData.ordersHash,
+                auditData.fillsHash,
+                auditData.keyHash,
+                auditData.iv,
+                auditData.orderCount
+            );
+        }
     }
 
     // ============ Settlement Helper Functions ============
@@ -1014,7 +1345,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
     }
 
     /// @inheritdoc ILatchHook
-    function claimTokens(PoolKey calldata key, uint256 batchId) external override nonReentrant {
+    function claimTokens(PoolKey calldata key, uint256 batchId) external override nonReentrant whenClaimNotPaused {
         PoolId poolId = key.toId();
 
         // 1. Verify batch exists and is settled
@@ -1065,7 +1396,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard {
     function refundDeposit(
         PoolKey calldata key,
         uint256 batchId
-    ) external override nonReentrant {
+    ) external override nonReentrant whenWithdrawNotPaused {
         PoolId poolId = key.toId();
 
         // 1. Verify batch exists and is past REVEAL phase

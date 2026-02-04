@@ -95,8 +95,9 @@ contract TestLatchHook is LatchHook {
     constructor(
         IPoolManager _poolManager,
         IWhitelistRegistry _whitelistRegistry,
-        IBatchVerifier _batchVerifier
-    ) LatchHook(_poolManager, _whitelistRegistry, _batchVerifier) {}
+        IBatchVerifier _batchVerifier,
+        address _owner
+    ) LatchHook(_poolManager, _whitelistRegistry, _batchVerifier, _owner) {}
 
     function validateHookAddress(BaseHook) internal pure override {
         // Skip validation in tests
@@ -235,7 +236,8 @@ contract TransparencyModuleTest is Test {
         hook = new TestLatchHook(
             IPoolManager(address(poolManager)),
             IWhitelistRegistry(address(whitelistRegistry)),
-            IBatchVerifier(address(batchVerifier))
+            IBatchVerifier(address(batchVerifier)),
+            address(this)
         );
 
         currency0 = Currency.wrap(address(0x1));

@@ -194,3 +194,75 @@ error Latch__AlreadyDisclosed();
 
 /// @notice Thrown when disclosed orders don't match the committed root
 error Latch__OrdersRootMismatch();
+
+// ============ Audit Access Errors ============
+
+/// @notice Thrown when caller is not the pool operator
+error Latch__NotPoolOperator();
+
+/// @notice Thrown when caller is not an authorized auditor
+error Latch__NotAuthorizedAuditor();
+
+/// @notice Thrown when auditor authorization has expired
+error Latch__AuditorExpired();
+
+/// @notice Thrown when auditor has been revoked
+error Latch__AuditorAlreadyRevoked();
+
+/// @notice Thrown when role is insufficient for the operation
+/// @param required The required role level
+/// @param actual The actual role level
+error Latch__InsufficientRole(uint8 required, uint8 actual);
+
+/// @notice Thrown when access request is not found
+error Latch__RequestNotFound();
+
+/// @notice Thrown when batch data is not found
+error Latch__BatchDataNotFound();
+
+/// @notice Thrown when public key is invalid (zero)
+error Latch__InvalidPublicKey();
+
+/// @notice Thrown when authorization duration is invalid
+/// @param provided The provided duration
+/// @param min Minimum allowed duration
+/// @param max Maximum allowed duration
+error Latch__InvalidAuthDuration(uint64 provided, uint64 min, uint64 max);
+
+/// @notice Thrown when request has already been processed
+error Latch__RequestAlreadyProcessed();
+
+/// @notice Thrown when request has expired
+error Latch__RequestExpired();
+
+/// @notice Thrown when caller is not the LatchHook
+error Latch__OnlyLatchHook();
+
+/// @notice Thrown when pool operator is already set
+error Latch__PoolOperatorAlreadySet();
+
+/// @notice Thrown when encrypted data is empty
+error Latch__EmptyEncryptedData();
+
+/// @notice Thrown when bulk operation exceeds max size
+/// @param provided The provided array length
+/// @param max Maximum allowed length
+error Latch__BulkOperationTooLarge(uint256 provided, uint256 max);
+
+/// @notice Thrown when auditor is already authorized
+error Latch__AuditorAlreadyAuthorized();
+
+/// @notice Thrown when trying to access own request
+error Latch__CannotProcessOwnRequest();
+
+// ============ Pause Errors ============
+
+/// @notice Thrown when an operation is paused
+/// @param operation The operation that was attempted (e.g., "commit", "reveal", "settle")
+error Latch__OperationPaused(string operation);
+
+// ============ Solver Errors ============
+
+/// @notice Thrown when caller is not an authorized solver
+/// @param caller The unauthorized caller address
+error Latch__NotAuthorizedSolver(address caller);

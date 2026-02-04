@@ -146,8 +146,9 @@ contract TestLatchHook is LatchHook {
     constructor(
         IPoolManager _poolManager,
         IWhitelistRegistry _whitelistRegistry,
-        IBatchVerifier _batchVerifier
-    ) LatchHook(_poolManager, _whitelistRegistry, _batchVerifier) {}
+        IBatchVerifier _batchVerifier,
+        address _owner
+    ) LatchHook(_poolManager, _whitelistRegistry, _batchVerifier, _owner) {}
 
     /// @notice Override to skip hook address validation for testing
     function validateHookAddress(BaseHook) internal pure override {
@@ -200,7 +201,8 @@ contract CommitPhaseTest is Test {
         hook = new TestLatchHook(
             IPoolManager(address(poolManager)),
             IWhitelistRegistry(address(whitelistRegistry)),
-            IBatchVerifier(address(batchVerifier))
+            IBatchVerifier(address(batchVerifier)),
+            address(this)
         );
 
         // Create test currencies (token1 is the deposit currency)

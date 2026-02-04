@@ -30,7 +30,8 @@ contract Deploy is Script {
         bytes memory constructorArgs = abi.encode(
             config.poolManager,
             config.whitelistRegistry,
-            config.batchVerifier
+            config.batchVerifier,
+            config.hookOwner
         );
 
         (address hookAddress, bytes32 salt) = HookMiner.find(
@@ -49,7 +50,8 @@ contract Deploy is Script {
         hook = new LatchHook{salt: salt}(
             IPoolManager(config.poolManager),
             IWhitelistRegistry(config.whitelistRegistry),
-            IBatchVerifier(config.batchVerifier)
+            IBatchVerifier(config.batchVerifier),
+            config.hookOwner
         );
 
         vm.stopBroadcast();

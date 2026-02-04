@@ -95,8 +95,8 @@ contract MockBatchVerifier is IBatchVerifier {
 contract TestLatchHook is LatchHook {
     using PoolIdLibrary for PoolKey;
 
-    constructor(IPoolManager _poolManager, IWhitelistRegistry _whitelistRegistry, IBatchVerifier _batchVerifier)
-        LatchHook(_poolManager, _whitelistRegistry, _batchVerifier)
+    constructor(IPoolManager _poolManager, IWhitelistRegistry _whitelistRegistry, IBatchVerifier _batchVerifier, address _owner)
+        LatchHook(_poolManager, _whitelistRegistry, _batchVerifier, _owner)
     {}
 
     /// @notice Override to skip hook address validation for testing
@@ -154,7 +154,8 @@ contract ClaimPhaseTest is Test {
         hook = new TestLatchHook(
             IPoolManager(address(poolManager)),
             whitelistRegistry,
-            batchVerifier
+            batchVerifier,
+            address(this)
         );
 
         // Set up pool key
