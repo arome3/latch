@@ -35,6 +35,7 @@ import {
     PoolConfigPacked,
     Commitment,
     Order,
+    RevealSlot,
     Batch,
     Claimable,
     SettledBatchData,
@@ -70,14 +71,10 @@ import {
     Latch__PILengthInvalid,
     Latch__PIBatchIdMismatch,
     Latch__PICountMismatch,
-    Latch__PIRootMismatch,
     Latch__PIWhitelistMismatch,
     Latch__PIFeeMismatch,
     Latch__PIProtocolFeeMismatch,
     Latch__PIClearingPriceZero,
-    Latch__PIClearingPriceMismatch,
-    Latch__PIBuyVolumeMismatch,
-    Latch__PISellVolumeMismatch,
     Latch__CommitPaused,
     Latch__RevealPaused,
     Latch__SettlePaused,
@@ -89,12 +86,13 @@ import {
     Latch__ModuleChangeRequiresTimelock,
     Latch__OnlyTimelock,
     Latch__DepositBelowMinimum,
-    Latch__InsufficientSolverLiquidity
+    Latch__InsufficientSolverLiquidity,
+    Latch__PauseDurationNotExpired,
+    Latch__NotPaused
 } from "./types/Errors.sol";
 import {BatchLib} from "./libraries/BatchLib.sol";
 import {MerkleLib} from "./libraries/MerkleLib.sol";
 import {OrderLib} from "./libraries/OrderLib.sol";
-import {ClearingPriceLib} from "./libraries/ClearingPriceLib.sol";
 import {PoseidonLib} from "./libraries/PoseidonLib.sol";
 import {PauseFlagsLib} from "./libraries/PauseFlagsLib.sol";
 
@@ -125,7 +123,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     // ============ Version ============
 
     /// @notice Protocol version for cross-contract compatibility checks
-    uint256 public constant LATCH_HOOK_VERSION = 1;
+    uint256 public constant LATCH_HOOK_VERSION = 2;
 
     // ============ Immutables ============
 
@@ -160,8 +158,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @dev Separate from Commitment struct for clean state management
     mapping(PoolId => mapping(uint256 => mapping(address => CommitmentStatus))) internal _commitmentStatus;
 
-    /// @notice Revealed orders array: PoolId => batchId => Order[]
-    mapping(PoolId => mapping(uint256 => Order[])) internal _revealedOrders;
+    /// @notice Revealed order slots: PoolId => batchId => RevealSlot[]
+    /// @dev Stores only trader + isBuy (1 slot). Full order data emitted via OrderRevealedData event.
+    mapping(PoolId => mapping(uint256 => RevealSlot[])) internal _revealedSlots;
 
     /// @notice Track if trader has revealed (for duplicate prevention): PoolId => batchId => trader => bool
     mapping(PoolId => mapping(uint256 => mapping(address => bool))) internal _hasRevealed;
@@ -175,6 +174,14 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @notice Packed pause flags for emergency controls
     /// @dev Uses PauseFlagsLib for bit-packed operations (6 flags in 1 byte)
     uint8 internal _pauseFlags;
+
+    /// @notice Block number when any pause was first activated (0 if nothing paused)
+    /// @dev Packs in same slot as _pauseFlags (uint8 + uint64 = 9 bytes)
+    uint64 internal _pausedAtBlock;
+
+    /// @notice Maximum pause duration in blocks (~48 hours at 12s/block)
+    /// @dev After this duration, anyone can call forceUnpause()
+    uint64 public constant MAX_PAUSE_DURATION = 14_400;
 
     // ============ Solver Rewards ============
 
@@ -221,6 +228,12 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
 
     /// @notice Emitted when minimum order size is updated
     event MinOrderSizeUpdated(uint128 oldSize, uint128 newSize);
+
+    /// @notice Emitted when solver registry is updated
+    event SolverRegistryUpdated(address oldRegistry, address newRegistry);
+
+    /// @notice Emitted when force unpause is executed
+    event ForceUnpaused(address indexed caller, uint64 pausedAtBlock, uint64 unpausedAtBlock);
 
     // ============ Modifiers ============
 
@@ -299,10 +312,15 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Set the solver registry for multi-solver support
-    /// @dev Can be updated by owner. Pass address(0) to disable solver restrictions.
+    /// @dev Initial setup (from address(0)) allowed by owner. After that, requires timelock if set.
     /// @param _registry The solver registry address
     function setSolverRegistry(address _registry) external onlyOwner {
+        if (address(solverRegistry) != address(0) && timelock != address(0)) {
+            revert Latch__ModuleChangeRequiresTimelock();
+        }
+        address oldRegistry = address(solverRegistry);
         solverRegistry = ISolverRegistry(_registry);
+        emit SolverRegistryUpdated(oldRegistry, _registry);
     }
 
     /// @notice Set the solver rewards contract
@@ -360,6 +378,16 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         emit EmergencyModuleUpdated(oldModule, _emergencyModule);
     }
 
+    /// @notice Set solver registry via timelock
+    /// @dev Only callable by the timelock address
+    /// @param _registry The new solver registry contract address
+    function setSolverRegistryViaTimelock(address _registry) external {
+        if (msg.sender != timelock) revert Latch__OnlyTimelock();
+        address oldRegistry = address(solverRegistry);
+        solverRegistry = ISolverRegistry(_registry);
+        emit SolverRegistryUpdated(oldRegistry, _registry);
+    }
+
     /// @notice Set the minimum order size
     /// @dev Set to 0 to disable minimum. Prevents dust order griefing.
     /// @param _minOrderSize The minimum deposit amount for commitOrder
@@ -389,6 +417,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @dev Sets the ALL_BIT flag which overrides individual pause flags
     function pauseAll() external onlyOwner {
         _pauseFlags = PauseFlagsLib.setAllPaused(_pauseFlags, true);
+        _recordPauseActivation();
         emit PauseFlagsUpdated(_pauseFlags);
     }
 
@@ -396,6 +425,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @dev Clears the ALL_BIT flag. Individual pause flags may still be set.
     function unpauseAll() external onlyOwner {
         _pauseFlags = PauseFlagsLib.setAllPaused(_pauseFlags, false);
+        _clearPauseIfFullyUnpaused();
         emit PauseFlagsUpdated(_pauseFlags);
     }
 
@@ -403,6 +433,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @param paused Whether to pause commit operations
     function setCommitPaused(bool paused) external onlyOwner {
         _pauseFlags = PauseFlagsLib.setCommitPaused(_pauseFlags, paused);
+        if (paused) _recordPauseActivation(); else _clearPauseIfFullyUnpaused();
         emit PauseFlagsUpdated(_pauseFlags);
     }
 
@@ -410,6 +441,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @param paused Whether to pause reveal operations
     function setRevealPaused(bool paused) external onlyOwner {
         _pauseFlags = PauseFlagsLib.setRevealPaused(_pauseFlags, paused);
+        if (paused) _recordPauseActivation(); else _clearPauseIfFullyUnpaused();
         emit PauseFlagsUpdated(_pauseFlags);
     }
 
@@ -417,6 +449,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @param paused Whether to pause settle operations
     function setSettlePaused(bool paused) external onlyOwner {
         _pauseFlags = PauseFlagsLib.setSettlePaused(_pauseFlags, paused);
+        if (paused) _recordPauseActivation(); else _clearPauseIfFullyUnpaused();
         emit PauseFlagsUpdated(_pauseFlags);
     }
 
@@ -424,6 +457,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @param paused Whether to pause claim operations
     function setClaimPaused(bool paused) external onlyOwner {
         _pauseFlags = PauseFlagsLib.setClaimPaused(_pauseFlags, paused);
+        if (paused) _recordPauseActivation(); else _clearPauseIfFullyUnpaused();
         emit PauseFlagsUpdated(_pauseFlags);
     }
 
@@ -431,7 +465,47 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @param paused Whether to pause withdraw (refund) operations
     function setWithdrawPaused(bool paused) external onlyOwner {
         _pauseFlags = PauseFlagsLib.setWithdrawPaused(_pauseFlags, paused);
+        if (paused) _recordPauseActivation(); else _clearPauseIfFullyUnpaused();
         emit PauseFlagsUpdated(_pauseFlags);
+    }
+
+    /// @notice Force unpause all operations after MAX_PAUSE_DURATION
+    /// @dev Callable by anyone — prevents permanent fund freezing by malicious owner
+    function forceUnpause() external {
+        if (_pauseFlags == 0) revert Latch__NotPaused();
+        uint64 requiredBlock = _pausedAtBlock + MAX_PAUSE_DURATION;
+        if (uint64(block.number) < requiredBlock) {
+            revert Latch__PauseDurationNotExpired(uint64(block.number), requiredBlock);
+        }
+        uint64 pausedAt = _pausedAtBlock;
+        _pauseFlags = 0;
+        _pausedAtBlock = 0;
+        emit ForceUnpaused(msg.sender, pausedAt, uint64(block.number));
+        emit PauseFlagsUpdated(0);
+    }
+
+    /// @notice Get remaining blocks until force unpause becomes available
+    /// @return Remaining blocks (0 if force unpause is available or nothing is paused)
+    function blocksUntilForceUnpause() external view returns (uint64) {
+        if (_pauseFlags == 0 || _pausedAtBlock == 0) return 0;
+        uint64 requiredBlock = _pausedAtBlock + MAX_PAUSE_DURATION;
+        if (uint64(block.number) >= requiredBlock) return 0;
+        return requiredBlock - uint64(block.number);
+    }
+
+    /// @notice Record pause activation timestamp if not already recorded
+    /// @dev Only sets _pausedAtBlock on the first pause activation
+    function _recordPauseActivation() internal {
+        if (_pausedAtBlock == 0 && _pauseFlags != 0) {
+            _pausedAtBlock = uint64(block.number);
+        }
+    }
+
+    /// @notice Clear pause timestamp when all flags are unset
+    function _clearPauseIfFullyUnpaused() internal {
+        if (_pauseFlags == 0) {
+            _pausedAtBlock = 0;
+        }
     }
 
     /// @notice Get current pause flags (unpacked for readability)
@@ -799,14 +873,6 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         return _settledBatches[poolId][batchId];
     }
 
-    /// @notice Get all revealed orders for a batch
-    /// @param poolId The pool identifier
-    /// @param batchId The batch identifier
-    /// @return Array of revealed orders
-    function getRevealedOrders(PoolId poolId, uint256 batchId) external view returns (Order[] memory) {
-        return _revealedOrders[poolId][batchId];
-    }
-
     /// @notice Check if a batch has been settled
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
@@ -879,8 +945,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         //   Total: 32 + 20 + 16 + 16 + 1 + 32 = 117 bytes
         bytes32 domain = Constants.COMMITMENT_DOMAIN;
 
-        /// @solidity memory-safe-assembly
-        assembly {
+        assembly ("memory-safe") {
             // Get free memory pointer
             let ptr := mload(0x40)
 
@@ -1084,11 +1149,12 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             revert Latch__CommitmentAlreadyRefunded();
         }
 
-        // 3. Get commitment and verify + create order
+        // 3. Get commitment and verify + create order (commitment hash verification)
         Commitment storage commitment = _commitments[poolId][batchId][msg.sender];
 
         // Fix #3.3: amount is now uint128 — no cast needed (matches OrderLib)
-        Order memory order = OrderLib.verifyAndCreateOrder(
+        // We verify the commitment but only store minimal data on-chain
+        OrderLib.verifyAndCreateOrder(
             commitment,
             amount,
             limitPrice,
@@ -1096,8 +1162,8 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             salt
         );
 
-        // 4. Store the revealed order in array
-        _revealedOrders[poolId][batchId].push(order);
+        // 4. Store minimal reveal data (1 slot vs Order's 2 slots)
+        _revealedSlots[poolId][batchId].push(RevealSlot({trader: msg.sender, isBuy: isBuy}));
 
         // 5. Mark trader as having revealed
         _hasRevealed[poolId][batchId][msg.sender] = true;
@@ -1108,8 +1174,11 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         // 7. Increment batch revealed count
         batch.incrementRevealedCount();
 
-        // 8. Emit event WITHOUT order details (privacy protection)
+        // 8. Emit privacy-preserving event (kept for backwards compatibility)
         emit OrderRevealed(poolId, batchId, msg.sender);
+
+        // 9. Emit full order data for off-chain solver consumption
+        emit OrderRevealedData(poolId, batchId, msg.sender, amount, limitPrice, isBuy, salt);
     }
 
     /// @inheritdoc ILatchHook
@@ -1138,15 +1207,31 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Core settlement logic shared by settleBatch and settleBatchWithAudit
-    /// @dev Validates, verifies proof, executes settlement, stores data, and emits event
+    /// @dev Proof-delegated: validates chain-state only, trusts proof for clearingPrice/volumes/fills
+    /// @dev Split into validate + finalize to avoid Yul stack-too-deep (no memoryguard due to library assembly)
     function _executeSettlementCore(
         PoolKey calldata key,
         bytes calldata proof,
         bytes32[] calldata publicInputs
     ) internal returns (PoolId poolId, uint256 batchId) {
         poolId = key.toId();
-
         batchId = _currentBatchId[poolId];
+
+        // Validate batch state, chain-state PI, and verify ZK proof
+        _validateAndVerify(poolId, batchId, proof, publicInputs);
+
+        // Finalize settlement in separate stack frame
+        _finalizeSettlement(poolId, batchId, key, publicInputs);
+    }
+
+    /// @notice Validate batch state and verify ZK proof
+    /// @dev Extracted to reduce stack depth in _executeSettlementCore
+    function _validateAndVerify(
+        PoolId poolId,
+        uint256 batchId,
+        bytes calldata proof,
+        bytes32[] calldata publicInputs
+    ) internal {
         if (batchId == 0) {
             revert Latch__NoBatchActive();
         }
@@ -1171,69 +1256,61 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             }
         }
 
-        // Validate public inputs format
-        if (publicInputs.length != 9) {
-            revert Latch__PILengthInvalid(9, publicInputs.length);
+        // Validate public inputs format (25 = 9 base + 16 fills)
+        if (publicInputs.length != 25) {
+            revert Latch__PILengthInvalid(25, publicInputs.length);
         }
 
-        // Compute, validate, execute settlement (extracted to reduce stack depth)
-        SettlementResult memory sr = _computeAndExecuteSettlement(poolId, batchId, batch, proof, publicInputs);
+        // Validate chain-state public inputs (batchId, orderCount, whitelistRoot, feeRate, protocolFee)
+        _validatePublicInputs(poolId, batchId, batch, publicInputs);
 
-        // Fix #2.3: Pull token0 liquidity from solver for buy orders
-        _collectSolverLiquidity(key.currency0, sr.totalToken0Needed);
-
-        batch.settle(sr.clearingPrice, sr.buyVolume, sr.sellVolume, sr.ordersRoot);
-
-        _storeSettledBatchData(poolId, batchId, sr.clearingPrice, sr.buyVolume, sr.sellVolume, sr.orderCount, sr.ordersRoot);
-        _recordSolverActivity(msg.sender, key.currency1, publicInputs[8], batch.revealEndBlock + 1, batchId);
-
-        emit BatchSettled(poolId, batchId, sr.clearingPrice, sr.buyVolume, sr.sellVolume, sr.ordersRoot);
-    }
-
-    /// @dev Settlement result struct to avoid stack-too-deep
-    struct SettlementResult {
-        uint128 clearingPrice;
-        uint128 buyVolume;
-        uint128 sellVolume;
-        bytes32 ordersRoot;
-        uint256 orderCount;
-        uint256 totalToken0Needed;
-    }
-
-    /// @notice Compute clearing price, validate inputs, verify proof, and execute settlement
-    /// @dev Extracted from _executeSettlementCore to reduce stack depth
-    function _computeAndExecuteSettlement(
-        PoolId poolId,
-        uint256 batchId,
-        Batch storage batch,
-        bytes calldata proof,
-        bytes32[] calldata publicInputs
-    ) internal returns (SettlementResult memory result) {
-        // Fix #13: Single _ordersToMemory call — pass memory array through
-        Order[] memory ordersMemory = _ordersToMemory(_revealedOrders[poolId][batchId]);
-        result.orderCount = ordersMemory.length;
-
-        // Fix #4: Compute clearing price on-chain BEFORE validation
-        (result.clearingPrice, result.buyVolume, result.sellVolume) =
-            ClearingPriceLib.computeClearingPrice(ordersMemory);
-
-        // Compute orders root ONCE (Poseidon is ~10x more expensive than keccak256)
-        // Fix #2.4: Use memory array to avoid redundant storage reads
-        result.ordersRoot = _computeOrdersRoot(ordersMemory);
-
-        // Validate public inputs against on-chain state (now includes clearing price binding)
-        _validatePublicInputs(
-            poolId, batchId, batch, publicInputs,
-            result.clearingPrice, result.buyVolume, result.sellVolume, result.ordersRoot
-        );
-
-        // Verify ZK proof
+        // Verify ZK proof — THE critical security gate
         if (!batchVerifier.verify(proof, publicInputs)) {
             revert Latch__InvalidProof();
         }
+    }
 
-        // Execute settlement using the already-computed memory array
-        result.totalToken0Needed = _executeSettlement(poolId, batchId, ordersMemory, result.clearingPrice);
+    /// @notice Finalize settlement after proof verification
+    /// @dev Extracted from _executeSettlementCore to avoid Yul stack-too-deep
+    function _finalizeSettlement(
+        PoolId poolId,
+        uint256 batchId,
+        PoolKey calldata key,
+        bytes32[] calldata publicInputs
+    ) internal {
+        uint128 clearingPrice = uint128(uint256(publicInputs[1]));
+
+        // Execute settlement using fills from proof
+        uint256 totalToken0Needed = _executeSettlement(poolId, batchId, clearingPrice, publicInputs);
+
+        // Pull token0 liquidity from solver for buy orders
+        _collectSolverLiquidity(key.currency0, totalToken0Needed);
+
+        // Settle batch and store data
+        _settleBatchAndEmit(poolId, batchId, key.currency1, publicInputs);
+    }
+
+    /// @notice Settle batch storage, store data, record solver activity, and emit event
+    /// @dev Further extraction to avoid stack-too-deep in _finalizeSettlement
+    function _settleBatchAndEmit(
+        PoolId poolId,
+        uint256 batchId,
+        Currency currency1,
+        bytes32[] calldata publicInputs
+    ) internal {
+        uint128 clearingPrice = uint128(uint256(publicInputs[1]));
+        uint128 buyVolume = uint128(uint256(publicInputs[2]));
+        uint128 sellVolume = uint128(uint256(publicInputs[3]));
+        bytes32 ordersRoot = publicInputs[5];
+        uint256 orderCount = _revealedSlots[poolId][batchId].length;
+
+        Batch storage batch = _batches[poolId][batchId];
+        batch.settle(clearingPrice, buyVolume, sellVolume, ordersRoot);
+
+        _storeSettledBatchData(poolId, batchId, clearingPrice, buyVolume, sellVolume, orderCount, ordersRoot);
+        _recordSolverActivity(msg.sender, currency1, publicInputs[8], batch.revealEndBlock + 1, batchId);
+
+        emit BatchSettled(poolId, batchId, clearingPrice, buyVolume, sellVolume, ordersRoot);
     }
 
     /// @notice Internal function to store audit data
@@ -1320,197 +1397,137 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         }
     }
 
-    /// @notice Convert storage orders array to memory for library calls
-    /// @param orders Storage reference to orders array
-    /// @return result Memory copy of orders
-    function _ordersToMemory(Order[] storage orders) internal view returns (Order[] memory result) {
-        uint256 len = orders.length;
-        result = new Order[](len);
-        for (uint256 i = 0; i < len; i++) {
-            result[i] = orders[i];
-        }
-    }
-
-    /// @notice Validate public inputs against on-chain state
-    /// @dev Ensures prover is honest about batch state
+    /// @notice Validate public inputs against on-chain state (chain-state only)
+    /// @dev Proof-delegated: clearingPrice, volumes, ordersRoot, and fills are trusted from proof
+    /// @dev Only validates values the contract can independently derive from chain state
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
     /// @param batch The batch storage reference
-    /// @param publicInputs The public inputs from the proof
-    /// @param onChainClearingPrice The on-chain computed clearing price (Fix #4)
-    /// @param onChainBuyVolume The on-chain computed buy volume (Fix #4)
-    /// @param onChainSellVolume The on-chain computed sell volume (Fix #4)
-    /// @param computedOrdersRoot The pre-computed Poseidon Merkle root of orders
+    /// @param publicInputs The 25-element public inputs from the proof
     function _validatePublicInputs(
         PoolId poolId,
         uint256 batchId,
         Batch storage batch,
-        bytes32[] calldata publicInputs,
-        uint128 onChainClearingPrice,
-        uint128 onChainBuyVolume,
-        uint128 onChainSellVolume,
-        bytes32 computedOrdersRoot
+        bytes32[] calldata publicInputs
     ) internal view {
-        // Suppress unused variable warning - batch is used for future validations
+        // Suppress unused variable warning
         batch;
 
-        // [0] batchId
+        // [0] batchId — must match current batch
         if (uint256(publicInputs[0]) != batchId) {
             revert Latch__PIBatchIdMismatch(batchId, uint256(publicInputs[0]));
         }
 
-        // Fix #4: [1] clearingPrice - must match on-chain computation
-        if (uint256(publicInputs[1]) != onChainClearingPrice) {
-            revert Latch__PIClearingPriceMismatch(onChainClearingPrice, uint256(publicInputs[1]));
-        }
-
-        // Fix #4: [2] buyVolume - must match on-chain computation
-        if (uint256(publicInputs[2]) != onChainBuyVolume) {
-            revert Latch__PIBuyVolumeMismatch(onChainBuyVolume, uint256(publicInputs[2]));
-        }
-
-        // Fix #4: [3] sellVolume - must match on-chain computation
-        if (uint256(publicInputs[3]) != onChainSellVolume) {
-            revert Latch__PISellVolumeMismatch(onChainSellVolume, uint256(publicInputs[3]));
-        }
-
-        // [4] orderCount
-        uint256 orderCount = _revealedOrders[poolId][batchId].length;
+        // [4] orderCount — must match on-chain revealed count
+        uint256 orderCount = _revealedSlots[poolId][batchId].length;
         if (uint256(publicInputs[4]) != orderCount) {
             revert Latch__PICountMismatch(orderCount, uint256(publicInputs[4]));
         }
 
-        // [5] ordersRoot — uses pre-computed root (avoids duplicate Poseidon computation)
-        if (publicInputs[5] != computedOrdersRoot) {
-            revert Latch__PIRootMismatch(computedOrdersRoot, publicInputs[5]);
-        }
-
-        // [6] whitelistRoot - use snapshotted root for COMPLIANT pools
+        // [6] whitelistRoot — must match snapshotted root for COMPLIANT pools
         PoolConfig memory config = _getPoolConfig(poolId);
         bytes32 expectedWhitelistRoot = config.mode == PoolMode.COMPLIANT
-            ? _batchWhitelistRoots[poolId][batchId]  // Use snapshot, not current config
+            ? _batchWhitelistRoots[poolId][batchId]
             : bytes32(0);
         if (publicInputs[6] != expectedWhitelistRoot) {
             revert Latch__PIWhitelistMismatch(expectedWhitelistRoot, publicInputs[6]);
         }
 
-        // [7] feeRate - must match pool configuration
+        // [7] feeRate — must match pool configuration
         uint256 claimedFeeRate = uint256(publicInputs[7]);
         if (claimedFeeRate != config.feeRate) {
             revert Latch__PIFeeMismatch(config.feeRate, claimedFeeRate);
         }
 
-        // [8] protocolFee - verify computation using ON-CHAIN volumes (not prover's)
-        uint256 matchedVolume = onChainBuyVolume < onChainSellVolume ? onChainBuyVolume : onChainSellVolume;
+        // [8] protocolFee — arithmetic cross-check using proof's own claimed volumes
+        // This catches a malicious prover who inflates the fee without inflating volumes
+        uint256 claimedBuyVolume = uint256(publicInputs[2]);
+        uint256 claimedSellVolume = uint256(publicInputs[3]);
+        uint256 matchedVolume = claimedBuyVolume < claimedSellVolume ? claimedBuyVolume : claimedSellVolume;
         uint256 expectedFee = (matchedVolume * claimedFeeRate) / Constants.FEE_DENOMINATOR;
         uint256 claimedFee = uint256(publicInputs[8]);
         if (claimedFee != expectedFee) {
             revert Latch__PIProtocolFeeMismatch(expectedFee, claimedFee);
         }
 
-        // Validate clearing price is non-zero if orders exist
-        if (orderCount > 0 && onChainClearingPrice == 0) {
+        // Safety: clearing price must be non-zero when matched volume > 0
+        if (matchedVolume > 0 && uint256(publicInputs[1]) == 0) {
             revert Latch__PIClearingPriceZero();
         }
     }
 
-    /// @notice Compute Merkle root of revealed orders using Poseidon hashing
-    /// @dev CRITICAL: Uses Poseidon for ZK circuit compatibility
-    /// @dev Must match Noir's compute_orders_root() exactly
-    /// @param orders Memory array of orders (Fix #2.4: avoids redundant storage reads)
-    /// @return The Merkle root of all orders (as bytes32)
-    function _computeOrdersRoot(Order[] memory orders) internal pure returns (bytes32) {
-        uint256 len = orders.length;
-        if (len == 0) return bytes32(0);
-
-        // Encode each order as a Poseidon leaf (matches Noir's encode_order_as_field)
-        uint256[] memory leaves = new uint256[](len);
-        for (uint256 i = 0; i < len; i++) {
-            leaves[i] = OrderLib.encodeAsLeaf(orders[i]);
-        }
-
-        // Compute root using Poseidon sorted hashing (matches Noir's merkle module)
-        return bytes32(PoseidonLib.computeRoot(leaves));
-    }
-
-    /// @notice Execute settlement by computing claimable amounts for each trader
-    /// @dev Fix #2.3: Returns totalToken0Needed for solver liquidity provision
+    /// @notice Execute settlement using proof-delegated fills
+    /// @dev Reads fills directly from publicInputs[9..24], iterates _revealedSlots
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
-    /// @param ordersMemory Memory array of orders (Fix #13: avoids duplicate _ordersToMemory)
-    /// @param clearingPrice The computed clearing price
+    /// @param clearingPrice The clearing price (trusted from proof)
+    /// @param publicInputs The 25-element public inputs containing fills at indices [9..24]
     /// @return totalToken0Needed Total token0 required from solver for buy orders
     function _executeSettlement(
         PoolId poolId,
         uint256 batchId,
-        Order[] memory ordersMemory,
-        uint128 clearingPrice
+        uint128 clearingPrice,
+        bytes32[] calldata publicInputs
     ) internal returns (uint256 totalToken0Needed) {
-        uint256 len = ordersMemory.length;
+        RevealSlot[] storage slots = _revealedSlots[poolId][batchId];
+        uint256 len = slots.length;
         if (len == 0) return 0;
 
-        // Get matched amounts from library (uses already-loaded memory array)
-        (uint128[] memory matchedBuy, uint128[] memory matchedSell) =
-            ClearingPriceLib.computeMatchedVolumes(ordersMemory, clearingPrice);
-
-        // Calculate and store claimable amounts for each trader
         for (uint256 i = 0; i < len; i++) {
-            Order memory order = ordersMemory[i];
-            address trader = order.trader;
-
-            uint128 matchedAmount = order.isBuy ? matchedBuy[i] : matchedSell[i];
+            RevealSlot storage slot = slots[i];
+            uint128 fill = uint128(uint256(publicInputs[9 + i]));
 
             // Get deposit from commitment
-            Commitment storage commitment = _commitments[poolId][batchId][trader];
-            uint128 depositAmount = commitment.depositAmount;
+            uint128 depositAmount = _commitments[poolId][batchId][slot.trader].depositAmount;
 
-            // Calculate claimable amounts
-            (uint128 amount0, uint128 amount1) = _calculateClaimable(
-                order, matchedAmount, clearingPrice, depositAmount
+            // Calculate claimable amounts using fill from proof
+            (uint128 amount0, uint128 amount1) = _calculateClaimableDelegated(
+                slot.isBuy, fill, clearingPrice, depositAmount
             );
 
-            // Fix #2.3: Accumulate token0 needed for buy orders
-            if (order.isBuy) {
+            // Accumulate token0 needed for buy orders
+            if (slot.isBuy) {
                 totalToken0Needed += amount0;
             }
 
-            // Store claimable (accumulate in case trader has multiple orders - though currently 1 per trader)
-            Claimable storage claimable = _claimables[poolId][batchId][trader];
+            // Store claimable
+            Claimable storage claimable = _claimables[poolId][batchId][slot.trader];
             claimable.amount0 += amount0;
             claimable.amount1 += amount1;
         }
     }
 
-    /// @notice Calculate claimable amounts for an order
-    /// @param order The trader's order
-    /// @param matchedAmount Amount that was matched at clearing price
+    /// @notice Calculate claimable amounts using proof-delegated fill
+    /// @dev Same logic as old _calculateClaimable but takes bool isBuy instead of full Order
+    /// @param isBuy True for buy order, false for sell order
+    /// @param fill The fill amount (trusted from proof)
     /// @param clearingPrice The uniform clearing price
     /// @param depositAmount The original deposit amount
     /// @return amount0 Amount of token0 (base) claimable
     /// @return amount1 Amount of token1 (quote) claimable
-    function _calculateClaimable(
-        Order memory order,
-        uint128 matchedAmount,
+    function _calculateClaimableDelegated(
+        bool isBuy,
+        uint128 fill,
         uint128 clearingPrice,
         uint128 depositAmount
     ) internal pure returns (uint128 amount0, uint128 amount1) {
-        if (order.isBuy) {
+        if (isBuy) {
             // Buy order: deposited quote (token1), receive base (token0)
-            amount0 = matchedAmount;
+            amount0 = fill;
 
             // Refund excess deposit (quote not used)
-            uint256 payment = (uint256(matchedAmount) * clearingPrice) / Constants.PRICE_PRECISION;
+            uint256 payment = (uint256(fill) * clearingPrice) / Constants.PRICE_PRECISION;
             if (depositAmount > payment) {
                 amount1 = uint128(depositAmount - payment);
             }
         } else {
             // Sell order: deposited base (token0 as collateral via token1 deposit), receive payment in quote (token1)
-            uint256 payment = (uint256(matchedAmount) * clearingPrice) / Constants.PRICE_PRECISION;
+            uint256 payment = (uint256(fill) * clearingPrice) / Constants.PRICE_PRECISION;
             amount1 = uint128(payment);
 
             // Refund unmatched deposit portion
-            if (depositAmount > matchedAmount) {
-                amount1 += uint128(depositAmount - matchedAmount);
+            if (depositAmount > fill) {
+                amount1 += uint128(depositAmount - fill);
             }
         }
     }
@@ -1676,9 +1693,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         view
         returns (uint128 total0, uint128 total1)
     {
-        Order[] storage orders = _revealedOrders[poolId][batchId];
-        for (uint256 i = 0; i < orders.length; i++) {
-            Claimable storage c = _claimables[poolId][batchId][orders[i].trader];
+        RevealSlot[] storage slots = _revealedSlots[poolId][batchId];
+        for (uint256 i = 0; i < slots.length; i++) {
+            Claimable storage c = _claimables[poolId][batchId][slots[i].trader];
             if (!c.claimed) {
                 total0 += c.amount0;
                 total1 += c.amount1;
@@ -1780,7 +1797,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         override
         returns (uint256 count)
     {
-        return _revealedOrders[poolId][batchId].length;
+        return _revealedSlots[poolId][batchId].length;
     }
 
     // ============ Emergency Refund Callback (Fix #1) ============

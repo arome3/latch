@@ -12,7 +12,7 @@ contract MockHonkVerifier {
     /// @return True if valid (always true for mock)
     function verify(bytes calldata proof, bytes32[] calldata publicInputs)
         public
-        view
+        pure
         returns (bool)
     {
         // Silence unused parameter warnings

@@ -352,7 +352,7 @@ contract PoseidonCompatibilityTest is Test {
     // These tests output hash values that should be compared with Noir circuit output
     // Run: forge test --match-test "test_Vector" -vvv
 
-    function test_Vector_OrderLeafHash() public view {
+    function test_Vector_OrderLeafHash() public {
         Order memory order = Order({
             amount: 1e18,
             limitPrice: 2e18,
@@ -374,7 +374,7 @@ contract PoseidonCompatibilityTest is Test {
         assertTrue(hash != 0, "Hash should not be zero");
     }
 
-    function test_Vector_MerklePairHash() public view {
+    function test_Vector_MerklePairHash() public {
         uint256 a = 0x1111;
         uint256 b = 0x2222;
 
@@ -392,7 +392,7 @@ contract PoseidonCompatibilityTest is Test {
         assertEq(hash, hashReversed, "Sorted hashing should be commutative");
     }
 
-    function test_Vector_TraderHash() public view {
+    function test_Vector_TraderHash() public {
         address trader = address(0x1111111111111111111111111111111111111111);
 
         uint256 hash = PoseidonLib.hashTrader(trader);
@@ -407,7 +407,7 @@ contract PoseidonCompatibilityTest is Test {
         assertTrue(hash != 0, "Hash should not be zero");
     }
 
-    function test_Vector_MerkleRoot() public view {
+    function test_Vector_MerkleRoot() public {
         uint256[] memory leaves = new uint256[](4);
         leaves[0] = 0xaaaa;
         leaves[1] = 0xbbbb;

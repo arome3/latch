@@ -11,7 +11,12 @@ import {
     Latch__OnlyLatchHook,
     Latch__NoRewardsToClaim,
     Latch__InsufficientRewardBalance,
-    Latch__TransferFailed
+    Latch__TransferFailed,
+    Latch__WithdrawalNotReady,
+    Latch__WithdrawalAlreadyExecuted,
+    Latch__WithdrawalNotFound,
+    Latch__WithdrawalCancelled,
+    Latch__InstantWithdrawBlocked
 } from "../types/Errors.sol";
 
 /// @title SolverRewards
@@ -62,6 +67,9 @@ contract SolverRewards is ISolverRewards, Ownable2Step, ReentrancyGuard {
     /// @notice Maximum priority bonus (50% of base = 5000 basis points)
     uint256 public constant MAX_PRIORITY_BONUS = 5000;
 
+    /// @notice Delay for emergency withdrawals in blocks (~24 hours at 12s/block)
+    uint64 public constant WITHDRAWAL_DELAY = 7_200;
+
     // ============ Immutables ============
 
     /// @notice The LatchHook contract address
@@ -86,6 +94,37 @@ contract SolverRewards is ISolverRewards, Ownable2Step, ReentrancyGuard {
 
     /// @notice Total earned per solver per token
     mapping(address => mapping(address => uint256)) public override totalEarned;
+
+    // ============ Delayed Withdrawal Storage ============
+
+    /// @notice Status of a pending withdrawal
+    enum WithdrawalStatus { NONE, PENDING, EXECUTED, CANCELLED }
+
+    /// @notice Pending emergency withdrawal details
+    struct PendingWithdrawal {
+        address token;
+        address to;
+        uint256 amount;
+        uint64 executeAfterBlock;
+        WithdrawalStatus status;
+    }
+
+    /// @notice Pending withdrawals by ID
+    mapping(bytes32 => PendingWithdrawal) public pendingWithdrawals;
+
+    /// @notice Counter for generating unique withdrawal IDs
+    uint256 internal _withdrawalNonce;
+
+    /// @notice Timelock address for SolverRewards (optional)
+    /// @dev Once set, instant emergencyWithdraw is blocked
+    address public rewardsTimelock;
+
+    // ============ Events (Withdrawal) ============
+
+    event EmergencyWithdrawalScheduled(bytes32 indexed id, address token, address to, uint256 amount, uint64 executeAfterBlock);
+    event EmergencyWithdrawalExecuted(bytes32 indexed id);
+    event EmergencyWithdrawalCancelled(bytes32 indexed id);
+    event RewardsTimelockUpdated(address oldTimelock, address newTimelock);
 
     // ============ Modifiers ============
 
@@ -146,10 +185,12 @@ contract SolverRewards is ISolverRewards, Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Emergency withdraw tokens (for recovery)
+    /// @dev Only works when rewardsTimelock is not set (backward compat for tests/initial setup)
     /// @param token The token to withdraw (address(0) for ETH)
     /// @param to The recipient address
     /// @param amount The amount to withdraw
     function emergencyWithdraw(address token, address to, uint256 amount) external onlyOwner {
+        if (rewardsTimelock != address(0)) revert Latch__InstantWithdrawBlocked();
         if (to == address(0)) revert Latch__ZeroAddress();
 
         if (token == address(0)) {
@@ -158,6 +199,73 @@ contract SolverRewards is ISolverRewards, Ownable2Step, ReentrancyGuard {
         } else {
             IERC20(token).safeTransfer(to, amount);
         }
+    }
+
+    /// @notice Set the rewards timelock (one-time configuration)
+    /// @dev Once set, instant emergencyWithdraw is blocked and delayed withdrawals are required
+    /// @param _timelock The timelock address
+    function setRewardsTimelock(address _timelock) external onlyOwner {
+        if (_timelock == address(0)) revert Latch__ZeroAddress();
+        if (rewardsTimelock != address(0)) revert Latch__ZeroAddress(); // already set
+        address oldTimelock = rewardsTimelock;
+        rewardsTimelock = _timelock;
+        emit RewardsTimelockUpdated(oldTimelock, _timelock);
+    }
+
+    /// @notice Schedule a delayed emergency withdrawal
+    /// @param token The token to withdraw (address(0) for ETH)
+    /// @param to The recipient address
+    /// @param amount The amount to withdraw
+    /// @return id The unique withdrawal ID
+    function scheduleEmergencyWithdraw(address token, address to, uint256 amount) external onlyOwner returns (bytes32 id) {
+        if (to == address(0)) revert Latch__ZeroAddress();
+
+        id = keccak256(abi.encode(token, to, amount, _withdrawalNonce++));
+        uint64 executeAfterBlock = uint64(block.number) + WITHDRAWAL_DELAY;
+
+        pendingWithdrawals[id] = PendingWithdrawal({
+            token: token,
+            to: to,
+            amount: amount,
+            executeAfterBlock: executeAfterBlock,
+            status: WithdrawalStatus.PENDING
+        });
+
+        emit EmergencyWithdrawalScheduled(id, token, to, amount, executeAfterBlock);
+    }
+
+    /// @notice Execute a scheduled emergency withdrawal after delay
+    /// @param id The withdrawal ID to execute
+    function executeEmergencyWithdraw(bytes32 id) external onlyOwner {
+        PendingWithdrawal storage w = pendingWithdrawals[id];
+        if (w.status == WithdrawalStatus.NONE) revert Latch__WithdrawalNotFound();
+        if (w.status == WithdrawalStatus.EXECUTED) revert Latch__WithdrawalAlreadyExecuted();
+        if (w.status == WithdrawalStatus.CANCELLED) revert Latch__WithdrawalCancelled();
+        if (uint64(block.number) < w.executeAfterBlock) {
+            revert Latch__WithdrawalNotReady(uint64(block.number), w.executeAfterBlock);
+        }
+
+        w.status = WithdrawalStatus.EXECUTED;
+
+        if (w.token == address(0)) {
+            (bool success,) = w.to.call{value: w.amount}("");
+            if (!success) revert Latch__TransferFailed();
+        } else {
+            IERC20(w.token).safeTransfer(w.to, w.amount);
+        }
+
+        emit EmergencyWithdrawalExecuted(id);
+    }
+
+    /// @notice Cancel a scheduled emergency withdrawal
+    /// @param id The withdrawal ID to cancel
+    function cancelEmergencyWithdraw(bytes32 id) external onlyOwner {
+        PendingWithdrawal storage w = pendingWithdrawals[id];
+        if (w.status == WithdrawalStatus.NONE) revert Latch__WithdrawalNotFound();
+        if (w.status != WithdrawalStatus.PENDING) revert Latch__WithdrawalAlreadyExecuted();
+
+        w.status = WithdrawalStatus.CANCELLED;
+        emit EmergencyWithdrawalCancelled(id);
     }
 
     // ============ ISolverRewards Implementation ============

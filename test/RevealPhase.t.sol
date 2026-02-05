@@ -14,7 +14,8 @@ import {
     PoolConfig,
     Commitment,
     Batch,
-    Order
+    Order,
+    RevealSlot
 } from "../src/types/LatchTypes.sol";
 import {Constants} from "../src/types/Constants.sol";
 import {
@@ -78,7 +79,7 @@ contract MockBatchVerifier is IBatchVerifier {
         emit VerifierStatusChanged(_enabled);
     }
 
-    function verify(bytes calldata, bytes32[] calldata) external view returns (bool) {
+    function verify(bytes calldata, bytes32[] calldata) external returns (bool) {
         return enabled;
     }
 
@@ -87,7 +88,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 9;
+        return 25;
     }
 }
 
@@ -108,17 +109,17 @@ contract TestLatchHook is LatchHook {
     /// @notice Receive ETH for testing
     receive() external payable {}
 
-    /// @notice Get the revealed order for a trader
-    /// @dev Searches through revealed orders array to find the order for a specific trader
-    function getOrder(PoolId poolId, uint256 batchId, address trader) external view returns (Order memory) {
-        Order[] storage orders = _revealedOrders[poolId][batchId];
-        for (uint256 i = 0; i < orders.length; i++) {
-            if (orders[i].trader == trader) {
-                return orders[i];
+    /// @notice Get the revealed slot for a trader
+    /// @dev Searches through revealed slots array to find the slot for a specific trader
+    function getRevealSlot(PoolId poolId, uint256 batchId, address trader) external view returns (RevealSlot memory) {
+        RevealSlot[] storage slots = _revealedSlots[poolId][batchId];
+        for (uint256 i = 0; i < slots.length; i++) {
+            if (slots[i].trader == trader) {
+                return slots[i];
             }
         }
-        // Return empty order if not found
-        return Order({amount: 0, limitPrice: 0, trader: address(0), isBuy: false});
+        // Return empty slot if not found
+        return RevealSlot({trader: address(0), isBuy: false});
     }
 }
 
@@ -271,12 +272,10 @@ contract RevealPhaseTest is Test {
         assertEq(uint8(status), uint8(CommitmentStatus.REVEALED), "Status should be REVEALED");
         assertEq(commitment.trader, trader1, "Trader should match");
 
-        // Verify order stored correctly
-        Order memory order = hook.getOrder(poolId, batchId, trader1);
-        assertEq(order.amount, uint128(DEPOSIT_AMOUNT), "Order amount should match");
-        assertEq(order.limitPrice, LIMIT_PRICE, "Order price should match");
-        assertTrue(order.isBuy, "Order should be buy");
-        assertEq(order.trader, trader1, "Order trader should match");
+        // Verify reveal slot stored correctly (proof-delegated: only trader + isBuy stored)
+        RevealSlot memory slot = hook.getRevealSlot(poolId, batchId, trader1);
+        assertTrue(slot.isBuy, "Slot should be buy");
+        assertEq(slot.trader, trader1, "Slot trader should match");
 
         // Verify batch revealed count incremented
         Batch memory batch = hook.getBatch(poolId, batchId);
@@ -469,9 +468,9 @@ contract RevealPhaseTest is Test {
         vm.prank(trader1);
         hook.revealOrder(poolKey, orderAmount, LIMIT_PRICE, true, SALT);
 
-        // Verify order stored with correct amount
-        Order memory order = hook.getOrder(poolId, 1, trader1);
-        assertEq(order.amount, uint128(orderAmount), "Order amount should be partial");
+        // Verify reveal slot stored (proof-delegated: amount/price emitted as event, not stored)
+        RevealSlot memory slot = hook.getRevealSlot(poolId, 1, trader1);
+        assertEq(slot.trader, trader1, "Slot trader should match");
     }
 
     function test_revealOrder_multipleTraders() public {
@@ -500,12 +499,12 @@ contract RevealPhaseTest is Test {
         vm.prank(trader2);
         hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2);
 
-        // Verify both orders
-        Order memory order1 = hook.getOrder(poolId, batchId, trader1);
-        Order memory order2 = hook.getOrder(poolId, batchId, trader2);
+        // Verify both reveal slots
+        RevealSlot memory slot1 = hook.getRevealSlot(poolId, batchId, trader1);
+        RevealSlot memory slot2 = hook.getRevealSlot(poolId, batchId, trader2);
 
-        assertTrue(order1.isBuy, "Order1 should be buy");
-        assertFalse(order2.isBuy, "Order2 should be sell");
+        assertTrue(slot1.isBuy, "Slot1 should be buy");
+        assertFalse(slot2.isBuy, "Slot2 should be sell");
 
         // Verify revealed count
         Batch memory batch = hook.getBatch(poolId, batchId);

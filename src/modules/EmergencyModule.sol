@@ -95,7 +95,7 @@ contract EmergencyModule is Ownable2Step, ReentrancyGuard {
 
         // Verify cross-contract compatibility before wiring
         uint256 version = ILatchHookMinimal(_latchHook).LATCH_HOOK_VERSION();
-        if (version != 1) revert Latch__IncompatibleLatchHookVersion(version, 1);
+        if (version != 2) revert Latch__IncompatibleLatchHookVersion(version, 2);
 
         latchHook = _latchHook;
         batchStartBond = _batchStartBond;

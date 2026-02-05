@@ -68,7 +68,7 @@ contract BatchVerifierTest is Test {
 
     // ============ Verify Function Tests ============
 
-    function test_Verify_ValidInputs_ReturnsTrue() public view {
+    function test_Verify_ValidInputs_ReturnsTrue() public {
         bytes32[] memory publicInputs = _createValidPublicInputs();
         bytes memory proof = hex""; // Placeholder proof
 
@@ -88,14 +88,14 @@ contract BatchVerifierTest is Test {
     }
 
     function test_Verify_RevertsOnWrongInputLength() public {
-        bytes32[] memory publicInputs = new bytes32[](8); // Wrong length
+        bytes32[] memory publicInputs = new bytes32[](24); // Wrong length
         bytes memory proof = hex"";
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 IBatchVerifier.InvalidPublicInputsLength.selector,
-                9,
-                8
+                25,
+                24
             )
         );
         verifier.verify(proof, publicInputs);
@@ -124,8 +124,8 @@ contract BatchVerifierTest is Test {
         assertTrue(verifier.isEnabled());
     }
 
-    function test_GetPublicInputsCount_Returns9() public view {
-        assertEq(verifier.getPublicInputsCount(), 9);
+    function test_GetPublicInputsCount_Returns25() public view {
+        assertEq(verifier.getPublicInputsCount(), 25);
     }
 
     // ============ PublicInputsLib Encoding Tests ============
@@ -140,12 +140,13 @@ contract BatchVerifierTest is Test {
             ordersRoot: bytes32(uint256(0x1234)),
             whitelistRoot: bytes32(0),
             feeRate: bytes32(uint256(30)),
-            protocolFee: bytes32(uint256(30e15))
+            protocolFee: bytes32(uint256(30e15)),
+            fills: [bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0)]
         });
 
         bytes32[] memory encoded = PublicInputsLib.encode(inputs);
 
-        assertEq(encoded.length, 9);
+        assertEq(encoded.length, 25);
         assertEq(encoded[0], bytes32(uint256(1)));
         assertEq(encoded[1], bytes32(uint256(1000e18)));
         assertEq(encoded[2], bytes32(uint256(100e18)));
@@ -179,12 +180,13 @@ contract BatchVerifierTest is Test {
             ordersRoot: bytes32(uint256(0x1234)),
             whitelistRoot: bytes32(0),
             feeRate: bytes32(uint256(30)),
-            protocolFee: bytes32(uint256(30e15))
+            protocolFee: bytes32(uint256(30e15)),
+            fills: [bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0)]
         });
 
         bytes32[] memory fromStruct = PublicInputsLib.encode(inputs);
 
-        for (uint256 i = 0; i < 9; i++) {
+        for (uint256 i = 0; i < 25; i++) {
             assertEq(fromValues[i], fromStruct[i], "Mismatch at index");
         }
     }
@@ -192,7 +194,7 @@ contract BatchVerifierTest is Test {
     // ============ PublicInputsLib Decoding Tests ============
 
     function test_Decode_ProducesCorrectStruct() public pure {
-        bytes32[] memory publicInputs = new bytes32[](9);
+        bytes32[] memory publicInputs = new bytes32[](25);
         publicInputs[0] = bytes32(uint256(1));
         publicInputs[1] = bytes32(uint256(1000e18));
         publicInputs[2] = bytes32(uint256(100e18));
@@ -217,7 +219,7 @@ contract BatchVerifierTest is Test {
     }
 
     function test_Decode_RevertsOnWrongLength() public {
-        bytes32[] memory publicInputs = new bytes32[](8);
+        bytes32[] memory publicInputs = new bytes32[](24);
 
         // Library calls can't be tested with vm.expectRevert directly
         // Test via the contract's decode function instead
@@ -247,7 +249,8 @@ contract BatchVerifierTest is Test {
             ordersRoot: bytes32(uint256(0xabcd)),
             whitelistRoot: bytes32(uint256(0xef01)),
             feeRate: bytes32(uint256(100)),
-            protocolFee: bytes32(uint256(5e18))
+            protocolFee: bytes32(uint256(5e18)),
+            fills: [bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0)]
         });
 
         bytes32[] memory encoded = PublicInputsLib.encode(original);
@@ -287,7 +290,8 @@ contract BatchVerifierTest is Test {
             ordersRoot: ordersRoot,
             whitelistRoot: whitelistRoot,
             feeRate: bytes32(uint256(feeRate)),
-            protocolFee: bytes32(uint256(protocolFee))
+            protocolFee: bytes32(uint256(protocolFee)),
+            fills: [bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0)]
         });
 
         bytes32[] memory encoded = PublicInputsLib.encode(original);
@@ -358,7 +362,7 @@ contract BatchVerifierTest is Test {
     }
 
     function test_GetMatchedVolume_WhenSellLess() public pure {
-        bytes32[] memory publicInputs = new bytes32[](9);
+        bytes32[] memory publicInputs = new bytes32[](25);
         publicInputs[0] = bytes32(uint256(1));
         publicInputs[1] = bytes32(uint256(1000e18));
         publicInputs[2] = bytes32(uint256(200e18)); // Higher buy
@@ -418,7 +422,8 @@ contract BatchVerifierTest is Test {
             ordersRoot: bytes32(uint256(0x1234)),
             whitelistRoot: bytes32(0),
             feeRate: bytes32(uint256(30)),
-            protocolFee: bytes32(uint256(30e15))
+            protocolFee: bytes32(uint256(30e15)),
+            fills: [bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0), bytes32(0)]
         });
 
         uint256 gasBefore = gasleft();
@@ -633,7 +638,7 @@ contract BatchVerifierTest is Test {
     }
 
     function _createValidPublicInputsStatic() internal pure returns (bytes32[] memory publicInputs) {
-        publicInputs = new bytes32[](9);
+        publicInputs = new bytes32[](25);
         publicInputs[0] = bytes32(uint256(TEST_BATCH_ID));
         publicInputs[1] = bytes32(uint256(TEST_CLEARING_PRICE));
         publicInputs[2] = bytes32(uint256(TEST_BUY_VOLUME));

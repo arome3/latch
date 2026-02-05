@@ -7,17 +7,18 @@ pragma solidity ^0.8.26;
 ///
 /// Public Inputs Order (MUST match Noir circuit):
 /// ```
-/// Index │ Field           │ Type    │ Description
-/// ──────┼─────────────────┼─────────┼────────────────────────────────────
-///   [0] │ batchId         │ bytes32 │ Unique batch identifier (uint256 cast to bytes32)
-///   [1] │ clearingPrice   │ bytes32 │ Computed uniform clearing price (uint128 cast to bytes32)
-///   [2] │ totalBuyVolume  │ bytes32 │ Sum of matched buy order amounts (uint128 cast to bytes32)
-///   [3] │ totalSellVolume │ bytes32 │ Sum of matched sell order amounts (uint128 cast to bytes32)
-///   [4] │ orderCount      │ bytes32 │ Number of orders in the batch (uint256 cast to bytes32)
-///   [5] │ ordersRoot      │ bytes32 │ Merkle root of all orders
-///   [6] │ whitelistRoot   │ bytes32 │ Merkle root of whitelist (0 if PERMISSIONLESS)
-///   [7] │ feeRate         │ bytes32 │ Fee rate in basis points (0-1000, max 10%)
-///   [8] │ protocolFee     │ bytes32 │ Computed protocol fee amount
+/// Index  │ Field           │ Type    │ Description
+/// ───────┼─────────────────┼─────────┼────────────────────────────────────
+///   [0]  │ batchId         │ bytes32 │ Unique batch identifier (uint256 cast to bytes32)
+///   [1]  │ clearingPrice   │ bytes32 │ Computed uniform clearing price (uint128 cast to bytes32)
+///   [2]  │ totalBuyVolume  │ bytes32 │ Sum of matched buy order amounts (uint128 cast to bytes32)
+///   [3]  │ totalSellVolume │ bytes32 │ Sum of matched sell order amounts (uint128 cast to bytes32)
+///   [4]  │ orderCount      │ bytes32 │ Number of orders in the batch (uint256 cast to bytes32)
+///   [5]  │ ordersRoot      │ bytes32 │ Merkle root of all orders
+///   [6]  │ whitelistRoot   │ bytes32 │ Merkle root of whitelist (0 if PERMISSIONLESS)
+///   [7]  │ feeRate         │ bytes32 │ Fee rate in basis points (0-1000, max 10%)
+///   [8]  │ protocolFee     │ bytes32 │ Computed protocol fee amount
+/// [9..24]│ fills[0..15]    │ bytes32 │ Pro-rata fill amounts per order (uint128 cast to bytes32)
 /// ```
 ///
 /// The proof verifies that:
@@ -54,12 +55,12 @@ interface IBatchVerifier {
     /// @dev The proof format depends on the ZK backend implementation
     /// @dev Public inputs must be in the exact order specified above
     /// @param proof The ZK proof bytes (format depends on backend)
-    /// @param publicInputs Array of 9 public inputs as bytes32 in the specified order
+    /// @param publicInputs Array of 25 public inputs as bytes32 in the specified order
     /// @return True if the proof is valid
     /// @custom:throws InvalidProof if verification fails
-    /// @custom:throws InvalidPublicInputsLength if publicInputs.length != 9
+    /// @custom:throws InvalidPublicInputsLength if publicInputs.length != 25
     /// @custom:throws VerifierDisabled if verifier is not enabled
-    function verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool);
+    function verify(bytes calldata proof, bytes32[] calldata publicInputs) external returns (bool);
 
     // ============ View Functions ============
 
@@ -69,7 +70,7 @@ interface IBatchVerifier {
     function isEnabled() external view returns (bool);
 
     /// @notice Get the expected number of public inputs
-    /// @dev Always returns 9 for this protocol
+    /// @dev Always returns 25 for this protocol (9 base + 16 fills)
     /// @return The number of expected public inputs
     function getPublicInputsCount() external pure returns (uint256);
 }

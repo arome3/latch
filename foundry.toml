@@ -3,7 +3,7 @@
 
 [profile.default]
 # Compiler settings
-solc = "0.8.26"
+solc = "0.8.27"
 evm_version = "cancun"           # Required for TSTORE/TLOAD (EIP-1153)
 via_ir = true                    # Enable IR-based compilation
 optimizer = true

@@ -30,7 +30,7 @@ contract VerifierIntegrationTest is Test {
 
     // ============ Full Settlement Flow Tests ============
 
-    function test_FullSettlementFlow_SingleMatch() public view {
+    function test_FullSettlementFlow_SingleMatch() public {
         // Create matching buy and sell orders
         Order[] memory orders = new Order[](2);
         orders[0] = Order({
@@ -81,7 +81,7 @@ contract VerifierIntegrationTest is Test {
         assertTrue(result, "Settlement verification should pass");
     }
 
-    function test_FullSettlementFlow_ImbalancedOrders() public view {
+    function test_FullSettlementFlow_ImbalancedOrders() public {
         // More buy demand than sell supply
         Order[] memory orders = new Order[](3);
         orders[0] = Order({
@@ -137,7 +137,7 @@ contract VerifierIntegrationTest is Test {
         assertTrue(result, "Imbalanced settlement should pass");
     }
 
-    function test_FullSettlementFlow_EmptyBatch() public view {
+    function test_FullSettlementFlow_EmptyBatch() public {
         // Empty batch: no orders
         bytes32[] memory publicInputs = PublicInputsLib.encodeValues(
             bytes32(uint256(BATCH_ID)),
@@ -411,7 +411,7 @@ contract VerifierIntegrationTest is Test {
 
     // ============ Gas Benchmarks ============
 
-    function test_Gas_VerifyWithPlaceholder() public view {
+    function test_Gas_VerifyWithPlaceholder() public {
         bytes32[] memory publicInputs = PublicInputsLib.encodeValues(
             bytes32(uint256(BATCH_ID)),
             bytes32(uint256(1000e18)),

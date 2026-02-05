@@ -74,9 +74,9 @@ contract MockBatchVerifier is IBatchVerifier {
         emit VerifierStatusChanged(_enabled);
     }
 
-    function verify(bytes calldata, bytes32[] calldata publicInputs) external view returns (bool) {
+    function verify(bytes calldata, bytes32[] calldata publicInputs) external returns (bool) {
         if (!enabled) revert VerifierDisabled();
-        if (publicInputs.length != 9) revert InvalidPublicInputsLength(9, publicInputs.length);
+        if (publicInputs.length != 25) revert InvalidPublicInputsLength(25, publicInputs.length);
         return true;
     }
 
@@ -85,7 +85,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 9;
+        return 25;
     }
 }
 
@@ -166,26 +166,18 @@ contract TestLatchHook is LatchHook {
         }
     }
 
-    /// @notice Add a revealed order for testing
-    function _test_addRevealedOrder(
+    /// @notice Add a revealed slot for testing
+    /// @dev RevealSlot is 1 storage slot: trader(20) + isBuy(1) packed in one slot
+    function _test_addRevealedSlot(
         PoolId poolId,
         uint256 batchId,
         address trader,
-        uint128 amount,
-        uint128 limitPrice,
         bool isBuy
     ) external {
-        Order memory order = Order({
-            amount: amount,
-            limitPrice: limitPrice,
-            trader: trader,
-            isBuy: isBuy
-        });
-
-        // Access the _revealedOrders mapping storage
+        // Access the _revealedSlots mapping storage
         assembly {
-            // mapping(PoolId => mapping(uint256 => Order[]))
-            // _revealedOrders is at slot 5
+            // mapping(PoolId => mapping(uint256 => RevealSlot[]))
+            // _revealedSlots is at slot 5
             mstore(0x00, poolId)
             mstore(0x20, 5)
             let slot1 := keccak256(0x00, 0x40)
@@ -199,13 +191,10 @@ contract TestLatchHook is LatchHook {
             // Calculate new element slot
             mstore(0x00, arraySlot)
             let dataStart := keccak256(0x00, 0x20)
-            let elementSlot := add(dataStart, mul(len, 2)) // 2 slots per Order
+            let elementSlot := add(dataStart, len) // 1 slot per RevealSlot
 
-            // Store order data
-            // Slot 0: amount(16) + limitPrice(16) = 32 bytes
-            sstore(elementSlot, or(amount, shl(128, limitPrice)))
-            // Slot 1: trader(20) + isBuy(1)
-            sstore(add(elementSlot, 1), or(trader, shl(160, isBuy)))
+            // Store slot data: trader(20) + isBuy(1) packed in one word
+            sstore(elementSlot, or(trader, shl(160, isBuy)))
 
             // Update length
             sstore(arraySlot, add(len, 1))

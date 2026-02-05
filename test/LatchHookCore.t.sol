@@ -88,9 +88,9 @@ contract MockBatchVerifier is IBatchVerifier {
         emit VerifierStatusChanged(_enabled);
     }
 
-    function verify(bytes calldata, bytes32[] calldata publicInputs) external view returns (bool) {
+    function verify(bytes calldata, bytes32[] calldata publicInputs) external returns (bool) {
         if (!enabled) revert VerifierDisabled();
-        if (publicInputs.length != 9) revert InvalidPublicInputsLength(9, publicInputs.length);
+        if (publicInputs.length != 25) revert InvalidPublicInputsLength(25, publicInputs.length);
         return true;
     }
 
@@ -99,7 +99,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 9;
+        return 25;
     }
 }
 
@@ -600,7 +600,7 @@ contract LatchHookCoreTest is Test {
     }
 
     function test_settleBatch_revertsOnNoBatch() public {
-        bytes32[] memory inputs = new bytes32[](9);
+        bytes32[] memory inputs = new bytes32[](25);
         vm.expectRevert(Latch__NoBatchActive.selector);
         hook.settleBatch(poolKey, "", inputs);
     }

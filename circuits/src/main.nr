@@ -9,15 +9,19 @@
 // 3. totalBuyVolume and totalSellVolume are computed correctly
 // 4. The ordersRoot commits to the exact set of orders used
 // 5. All traders are in the whitelist (if whitelistRoot != 0)
+// 6. Pro-rata fill amounts are correctly computed for each order
 //
-// Public Inputs (7 total, matching IBatchVerifier.sol):
-// [0] batchId        - uint256: Unique batch identifier
-// [1] clearingPrice  - uint128: Computed uniform clearing price
-// [2] totalBuyVolume - uint128: Sum of matched buy order amounts
-// [3] totalSellVolume- uint128: Sum of matched sell order amounts
-// [4] orderCount     - uint256: Number of orders in the batch
-// [5] ordersRoot     - bytes32: Merkle root of all orders
-// [6] whitelistRoot  - bytes32: Merkle root of whitelist (0 if PERMISSIONLESS)
+// Public Inputs (25 total, matching IBatchVerifier.sol):
+// [0]     batchId        - uint256: Unique batch identifier
+// [1]     clearingPrice  - uint128: Computed uniform clearing price
+// [2]     totalBuyVolume - uint128: Sum of matched buy order amounts
+// [3]     totalSellVolume- uint128: Sum of matched sell order amounts
+// [4]     orderCount     - uint256: Number of orders in the batch
+// [5]     ordersRoot     - bytes32: Merkle root of all orders
+// [6]     whitelistRoot  - bytes32: Merkle root of whitelist (0 if PERMISSIONLESS)
+// [7]     feeRate        - uint256: Fee rate in basis points (0-1000)
+// [8]     protocolFee    - uint256: Computed protocol fee amount
+// [9..24] fills[0..15]   - uint128: Pro-rata fill amounts per order
 // =============================================================================
 
 mod constants;
@@ -55,7 +59,7 @@ use crate::pro_rata::verify_fills;
 
 /// Main batch verifier circuit
 ///
-/// # Public Inputs (9 total)
+/// # Public Inputs (25 total)
 /// - batch_id: Unique identifier for this batch auction
 /// - clearing_price: The computed uniform clearing price (scaled by 1e18)
 /// - total_buy_volume: Sum of matched buy order amounts
@@ -65,12 +69,13 @@ use crate::pro_rata::verify_fills;
 /// - whitelist_root: Merkle root of whitelist (0 if PERMISSIONLESS)
 /// - fee_rate: Protocol fee rate in basis points (0-1000)
 /// - protocol_fee: Computed protocol fee amount
+/// - fills[0..15]: Pro-rata fill amounts per order (proven correct by circuit)
 ///
 /// # Private Inputs
 /// - orders: Array of revealed orders (padded with zeros)
 /// - whitelist_proofs: Merkle proofs for each trader in whitelist (if COMPLIANT mode)
 fn main(
-    // ===== PUBLIC INPUTS (9 total) =====
+    // ===== PUBLIC INPUTS (25 total) =====
     batch_id: pub Field,              // [0] uint256
     clearing_price: pub Field,        // [1] uint128 (as Field)
     total_buy_volume: pub Field,      // [2] uint128 (as Field) - Total eligible buy demand
@@ -80,13 +85,11 @@ fn main(
     whitelist_root: pub Field,        // [6] bytes32
     fee_rate: pub Field,              // [7] Fee rate in basis points
     protocol_fee: pub Field,          // [8] Computed protocol fee amount
+    fills: pub [u128; BATCH_SIZE],    // [9..24] Pro-rata fill amounts per order
 
     // ===== PRIVATE INPUTS =====
     // Order data (padded with zeros to BATCH_SIZE)
     orders: [Order; BATCH_SIZE],
-
-    // Individual fill amounts for each order (pro-rata allocation)
-    fills: [u128; BATCH_SIZE],
 
     // Whitelist proofs for COMPLIANT mode
     // Each proof verifies trader is in whitelist
@@ -99,6 +102,15 @@ fn main(
     let sell_vol = total_sell_volume as u128;
     let fee_rate_u128 = fee_rate as u128;
     let claimed_fee = protocol_fee as u128;
+
+    // Defense-in-depth: explicit u128 range checks on financial values
+    // Noir's `as u128` adds implicit range constraints, but explicit checks
+    // guard against compiler changes and make the security property auditable.
+    assert(clearing_price == price as Field, "clearing_price exceeds u128");
+    assert(total_buy_volume == buy_vol as Field, "total_buy_volume exceeds u128");
+    assert(total_sell_volume == sell_vol as Field, "total_sell_volume exceeds u128");
+    assert(fee_rate == fee_rate_u128 as Field, "fee_rate exceeds u128");
+    assert(protocol_fee == claimed_fee as Field, "protocol_fee exceeds u128");
 
     // =========================================================================
     // 1. Validate batch_id is non-zero
@@ -236,8 +248,8 @@ fn test_valid_empty_batch() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -281,8 +293,8 @@ fn test_valid_single_order_no_match() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -348,8 +360,8 @@ fn test_valid_matching_orders() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -380,8 +392,8 @@ fn test_invalid_batch_id() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -419,8 +431,8 @@ fn test_invalid_orders_root() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -474,8 +486,8 @@ fn test_invalid_volumes() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -506,8 +518,8 @@ fn test_too_many_orders() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -518,7 +530,10 @@ fn test_too_many_orders() {
 // These tests verify Noir hash outputs match Solidity.
 // Run `forge test --match-contract PoseidonCompatibility -vvv` to compare.
 
-use crate::constants::POSEIDON_ORDER_DOMAIN;
+use crate::constants::{
+    POSEIDON_ORDER_DOMAIN, POSEIDON_MERKLE_DOMAIN, POSEIDON_TRADER_DOMAIN,
+    FEE_DENOMINATOR, MAX_FEE_RATE, PRICE_PRECISION
+};
 
 #[test]
 fn test_cross_system_poseidon_domain() {
@@ -662,8 +677,8 @@ fn test_empty_batch_with_fees() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -724,8 +739,8 @@ fn test_single_match_with_fees() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -793,8 +808,8 @@ fn test_imbalanced_with_fees() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -852,8 +867,8 @@ fn test_max_fee_rate() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -911,8 +926,8 @@ fn test_zero_fee_rate() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -944,8 +959,8 @@ fn test_rejects_excessive_fee_rate() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1002,8 +1017,8 @@ fn test_rejects_wrong_fee() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1082,8 +1097,8 @@ fn test_pro_rata_buy_constrained() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1154,8 +1169,8 @@ fn test_pro_rata_sell_constrained() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1221,8 +1236,8 @@ fn test_pro_rata_rejects_wrong_fill() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1288,8 +1303,8 @@ fn test_pro_rata_with_rounding_tolerance() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1349,8 +1364,8 @@ fn test_pro_rata_large_imbalance() {
         whitelist_root,
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
     );
 }
@@ -1468,8 +1483,71 @@ fn test_full_whitelist_flow() {
         whitelist_root, // NON-ZERO = COMPLIANT mode
         fee_rate,
         protocol_fee,
-        orders,
         fills,
+        orders,
         whitelist_proofs
+    );
+}
+
+// =============================================================================
+// Cross-System Constants Validation Tests
+// =============================================================================
+// These tests verify Noir constants match their Solidity counterparts.
+// If any fail, ZK proofs and on-chain verification will disagree.
+
+#[test]
+fn test_cross_system_constants_match() {
+    // WHITELIST_DEPTH == 8  (Constants.sol:16 MERKLE_DEPTH)
+    assert(WHITELIST_DEPTH == 8, "WHITELIST_DEPTH must be 8");
+    // BATCH_SIZE == 16  (Constants.sol:12 MAX_ORDERS)
+    assert(BATCH_SIZE == 16, "BATCH_SIZE must be 16");
+    // FEE_DENOMINATOR == 10000
+    assert(FEE_DENOMINATOR == 10000, "FEE_DENOMINATOR must be 10000");
+    // MAX_FEE_RATE == 1000  (10% in basis points)
+    assert(MAX_FEE_RATE == 1000, "MAX_FEE_RATE must be 1000");
+    // PRICE_PRECISION == 1e18
+    assert(PRICE_PRECISION == 1_000_000_000_000_000_000, "PRICE_PRECISION must be 1e18");
+    // Domain separators (supplement existing single-separator test)
+    assert(POSEIDON_ORDER_DOMAIN == 0x4c415443485f4f524445525f5631, "ORDER_DOMAIN mismatch");
+    assert(POSEIDON_MERKLE_DOMAIN == 0x4c415443485f4d45524b4c455f5631, "MERKLE_DOMAIN mismatch");
+    assert(POSEIDON_TRADER_DOMAIN == 0x4c415443485f545241444552, "TRADER_DOMAIN mismatch");
+}
+
+// =============================================================================
+// u128 Range Check Rejection Tests
+// =============================================================================
+
+#[test(should_fail)]
+fn test_clearing_price_overflow_u128_rejected() {
+    // 2^128 exceeds u128 range -- must be rejected by range check
+    let overflow_value: Field = 0x100000000000000000000000000000000;
+
+    let batch_id = 1;
+    let clearing_price = overflow_value;
+    let total_buy_volume = 1000;
+    let total_sell_volume = 1000;
+    let order_count = 1;
+    let orders_root = 0;
+    let whitelist_root = 0; // OPEN mode
+    let fee_rate = 30;
+    let protocol_fee = 3;
+    let fills: [u128; BATCH_SIZE] = [1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    let orders = [Order {
+        amount: 1000,
+        limit_price: 2000000000000000000,
+        trader: [0x11; 20],
+        is_buy: true,
+    }, Order::zero(), Order::zero(), Order::zero(),
+       Order::zero(), Order::zero(), Order::zero(), Order::zero(),
+       Order::zero(), Order::zero(), Order::zero(), Order::zero(),
+       Order::zero(), Order::zero(), Order::zero(), Order::zero()];
+
+    let whitelist_proofs: [WhitelistProof<WHITELIST_DEPTH>; BATCH_SIZE] = [WhitelistProof::zero(); BATCH_SIZE];
+
+    main(
+        batch_id, clearing_price, total_buy_volume, total_sell_volume,
+        order_count, orders_root, whitelist_root, fee_rate, protocol_fee,
+        fills, orders, whitelist_proofs
     );
 }

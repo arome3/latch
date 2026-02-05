@@ -24,7 +24,7 @@ contract HashCompatibilityTest is Test {
     }
 
     /// @notice Log ORDER_DOMAIN for manual comparison
-    function test_orderDomain_log() public view {
+    function test_orderDomain_log() public {
         bytes32 domain = Constants.ORDER_DOMAIN;
         console2.log("ORDER_DOMAIN:");
         console2.logBytes32(domain);
@@ -32,7 +32,7 @@ contract HashCompatibilityTest is Test {
 
     /// @notice Test order vector 1: Standard buy order
     /// Must match test_order_1() in Noir test_vectors.nr
-    function test_orderHash_vector1() public view {
+    function test_orderHash_vector1() public {
         Order memory order = Order({
             amount: 1e18,
             limitPrice: 2e18,
@@ -51,7 +51,7 @@ contract HashCompatibilityTest is Test {
 
     /// @notice Test order vector 2: Standard sell order
     /// Must match test_order_2() in Noir test_vectors.nr
-    function test_orderHash_vector2() public view {
+    function test_orderHash_vector2() public {
         Order memory order = Order({
             amount: 0.5e18,
             limitPrice: 1.5e18,
@@ -69,7 +69,7 @@ contract HashCompatibilityTest is Test {
 
     /// @notice Test order vector 3: Edge case with larger values
     /// Must match test_order_3() in Noir test_vectors.nr
-    function test_orderHash_vector3() public view {
+    function test_orderHash_vector3() public {
         Order memory order = Order({
             amount: 10e18,
             limitPrice: 100e18,
@@ -176,7 +176,7 @@ contract HashCompatibilityTest is Test {
 
     /// @notice Test encoding layout matches expected format
     /// Layout: ORDER_DOMAIN (32) + trader (20) + amount (16) + limitPrice (16) + isBuy (1) = 85 bytes
-    function test_encoding_layout() public view {
+    function test_encoding_layout() public {
         Order memory order = Order({
             amount: 1e18,
             limitPrice: 2e18,

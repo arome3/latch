@@ -112,6 +112,16 @@ struct Order {
     // NOTE: salt is NOT stored - verified during reveal then discarded (saves 32 bytes/order)
 }
 
+/// @notice Minimal on-chain data stored per revealed order in proof-delegated settlement
+/// @dev Replaces full Order storage during reveal phase — only trader identity and side needed
+/// @dev Full order data (amount, limitPrice) emitted as event for off-chain solver consumption
+/// @dev Storage: 1 slot (vs Order's 2 slots) — 50% storage cost reduction per reveal
+///      Slot 0: trader(20) + isBuy(1) = 21 bytes
+struct RevealSlot {
+    address trader; // 20 bytes - address that placed the order
+    bool isBuy;     // 1 byte - true for buy order, false for sell order
+}
+
 /// @notice Complete state of a batch auction
 /// @dev Core storage struct for batch lifecycle management
 /// @dev Storage: 7 slots

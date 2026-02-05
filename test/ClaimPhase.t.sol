@@ -77,7 +77,7 @@ contract MockBatchVerifier is IBatchVerifier {
         emit VerifierStatusChanged(_enabled);
     }
 
-    function verify(bytes calldata, bytes32[] calldata) external view returns (bool) {
+    function verify(bytes calldata, bytes32[] calldata) external returns (bool) {
         return enabled;
     }
 
@@ -86,7 +86,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 9;
+        return 25;
     }
 }
 
@@ -246,17 +246,18 @@ contract ClaimPhaseTest is Test {
         return bytes32(PoseidonLib.computeRoot(leaves));
     }
 
-    /// @notice Build valid public inputs for settlement
-    function _buildPublicInputs(
+    /// @notice Build valid public inputs for settlement (25 elements: 9 base + 16 fills)
+    function _buildPublicInputsWithFills(
         uint256 batchId,
         uint128 clearingPrice,
         uint128 buyVolume,
         uint128 sellVolume,
         uint256 orderCount,
         bytes32 ordersRoot,
-        bytes32 whitelistRoot
+        bytes32 whitelistRoot,
+        uint128[] memory fills
     ) internal pure returns (bytes32[] memory) {
-        bytes32[] memory inputs = new bytes32[](9);
+        bytes32[] memory inputs = new bytes32[](25);
         inputs[0] = bytes32(batchId);
         inputs[1] = bytes32(uint256(clearingPrice));
         inputs[2] = bytes32(uint256(buyVolume));
@@ -264,12 +265,13 @@ contract ClaimPhaseTest is Test {
         inputs[4] = bytes32(orderCount);
         inputs[5] = ordersRoot;
         inputs[6] = whitelistRoot;
-        // Fee inputs: use default fee rate 30 bps (0.3%)
         inputs[7] = bytes32(uint256(30)); // feeRate
-        // Compute protocol fee: (matchedVolume * feeRate) / 10000
         uint256 matchedVolume = buyVolume < sellVolume ? buyVolume : sellVolume;
         uint256 protocolFee = (matchedVolume * 30) / 10000;
         inputs[8] = bytes32(protocolFee);
+        for (uint256 i = 0; i < fills.length && i < 16; i++) {
+            inputs[9 + i] = bytes32(uint256(fills[i]));
+        }
         return inputs;
     }
 
@@ -313,8 +315,11 @@ contract ClaimPhaseTest is Test {
         orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether; // buyer fill
+        fills[1] = 80 ether; // seller fill
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // Settle the batch

@@ -9,6 +9,7 @@ import {PoseidonLib} from "../src/libraries/PoseidonLib.sol";
 import {OrderLib} from "../src/libraries/OrderLib.sol";
 import {Constants} from "../src/types/Constants.sol";
 import {Order} from "../src/types/LatchTypes.sol";
+import {PublicInputsLib} from "../src/verifier/PublicInputsLib.sol";
 
 /// @title CrossSystemHashTest
 /// @notice Critical tests verifying Solidity hashes match Noir circuit hashes exactly
@@ -113,6 +114,23 @@ contract CrossSystemHashTest is Test {
             0x4c415443485f545241444552,
             "TRADER_DOMAIN mismatch with Noir"
         );
+    }
+
+    // ============ Shared Constants Verification ============
+
+    function test_SharedConstants_MatchNoir() public pure {
+        // MERKLE_DEPTH == 8 (Noir WHITELIST_DEPTH)
+        assertEq(Constants.MERKLE_DEPTH, 8, "MERKLE_DEPTH must be 8 (Noir WHITELIST_DEPTH)");
+        // MAX_ORDERS == 16 (Noir BATCH_SIZE)
+        assertEq(Constants.MAX_ORDERS, 16, "MAX_ORDERS must be 16 (Noir BATCH_SIZE)");
+        // FEE_DENOMINATOR == 10000
+        assertEq(Constants.FEE_DENOMINATOR, 10000, "FEE_DENOMINATOR must be 10000");
+        // MAX_FEE_RATE == 1000
+        assertEq(Constants.MAX_FEE_RATE, 1000, "MAX_FEE_RATE must be 1000");
+        // PRICE_PRECISION == 1e18
+        assertEq(Constants.PRICE_PRECISION, 1e18, "PRICE_PRECISION must be 1e18");
+        // NUM_FILLS == MAX_ORDERS (fill slots must equal batch size)
+        assertEq(PublicInputsLib.NUM_FILLS, Constants.MAX_ORDERS, "NUM_FILLS must equal MAX_ORDERS");
     }
 
     // ============ Test Vector Verification ============
@@ -279,19 +297,19 @@ contract CrossSystemHashTest is Test {
     // ============ Output Current Hashes (for debugging) ============
     // Run with: forge test --match-test "test_Output" -vvv
 
-    function test_Output_TV1() public view {
+    function test_Output_TV1() public {
         uint256 hash = PoseidonLib.hashPair(TV1_INPUT_A, TV1_INPUT_B);
         console2.log("TV1_EXPECTED_HASH =", hash);
         console2.logBytes32(bytes32(hash));
     }
 
-    function test_Output_TV2() public view {
+    function test_Output_TV2() public {
         uint256 hash = PoseidonLib.hashPair(TV2_INPUT_A, TV2_INPUT_B);
         console2.log("TV2_EXPECTED_HASH =", hash);
         console2.logBytes32(bytes32(hash));
     }
 
-    function test_Output_TV3() public view {
+    function test_Output_TV3() public {
         Order memory order = Order({
             amount: TV3_AMOUNT,
             limitPrice: TV3_LIMIT_PRICE,
@@ -303,13 +321,13 @@ contract CrossSystemHashTest is Test {
         console2.logBytes32(bytes32(leaf));
     }
 
-    function test_Output_TV6() public view {
+    function test_Output_TV6() public {
         uint256 hash = PoseidonLib.hashTrader(TV6_TRADER);
         console2.log("TV6_EXPECTED_HASH =", hash);
         console2.logBytes32(bytes32(hash));
     }
 
-    function test_Output_TV8() public view {
+    function test_Output_TV8() public {
         uint256[] memory leaves = new uint256[](2);
         leaves[0] = TV8_LEAF1;
         leaves[1] = TV8_LEAF2;

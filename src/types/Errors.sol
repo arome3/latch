@@ -459,3 +459,42 @@ error Latch__DepositBelowMinimum(uint128 provided, uint128 minimum);
 
 /// @notice Thrown when trader is not eligible for emergency refund (no deposit)
 error Latch__EmergencyRefundNotEligible();
+
+// ============ Auto-Unpause Errors ============
+
+/// @notice Thrown when force unpause is called but pause duration has not expired
+/// @param current Current block number
+/// @param required Block number when force unpause becomes available
+error Latch__PauseDurationNotExpired(uint64 current, uint64 required);
+
+/// @notice Thrown when force unpause is called but nothing is paused
+error Latch__NotPaused();
+
+// ============ BatchVerifier Auto-Enable Errors ============
+
+/// @notice Thrown when force enable is called but verifier is already enabled
+error Latch__VerifierAlreadyEnabled();
+
+/// @notice Thrown when force enable is called but disable duration has not expired
+/// @param current Current block number
+/// @param required Block number when force enable becomes available
+error Latch__DisableDurationNotExpired(uint64 current, uint64 required);
+
+// ============ SolverRewards Delayed Withdrawal Errors ============
+
+/// @notice Thrown when emergency withdrawal is not yet executable
+/// @param current Current block number
+/// @param required Block number when execution becomes available
+error Latch__WithdrawalNotReady(uint64 current, uint64 required);
+
+/// @notice Thrown when emergency withdrawal has already been executed
+error Latch__WithdrawalAlreadyExecuted();
+
+/// @notice Thrown when emergency withdrawal ID is not found
+error Latch__WithdrawalNotFound();
+
+/// @notice Thrown when emergency withdrawal has been cancelled
+error Latch__WithdrawalCancelled();
+
+/// @notice Thrown when instant emergency withdraw is blocked because timelock is set
+error Latch__InstantWithdrawBlocked();

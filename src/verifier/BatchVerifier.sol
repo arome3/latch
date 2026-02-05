@@ -4,10 +4,12 @@ pragma solidity ^0.8.26;
 import {IBatchVerifier} from "../interfaces/IBatchVerifier.sol";
 import {PublicInputsLib} from "./PublicInputsLib.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Latch__VerifierAlreadyEnabled, Latch__DisableDurationNotExpired} from "../types/Errors.sol";
 
 /// @notice Interface for the underlying verifier contract
+/// @dev The generated UltraHonk verifier is non-view (uses memory operations)
 interface IHonkVerifier {
-    function verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool);
+    function verify(bytes calldata proof, bytes32[] calldata publicInputs) external returns (bool);
 }
 
 /// @title BatchVerifier
@@ -26,19 +28,20 @@ interface IHonkVerifier {
 /// PublicInputsLib (encoding/validation)      Ownable2Step (admin controls)
 /// ```
 ///
-/// ## Public Inputs (9 total, matching Noir circuit)
+/// ## Public Inputs (25 total, matching Noir circuit)
 ///
-/// | Index | Field           | Description                                    |
-/// |-------|-----------------|------------------------------------------------|
-/// |   0   | batchId         | Unique batch identifier                        |
-/// |   1   | clearingPrice   | Computed uniform clearing price                |
-/// |   2   | totalBuyVolume  | Sum of matched buy order amounts               |
-/// |   3   | totalSellVolume | Sum of matched sell order amounts              |
-/// |   4   | orderCount      | Number of orders in the batch                  |
-/// |   5   | ordersRoot      | Merkle root of all orders                      |
-/// |   6   | whitelistRoot   | Merkle root of whitelist (0 if PERMISSIONLESS) |
-/// |   7   | feeRate         | Fee rate in basis points (0-1000)              |
-/// |   8   | protocolFee     | Computed protocol fee amount                   |
+/// | Index  | Field           | Description                                    |
+/// |--------|-----------------|------------------------------------------------|
+/// |   0    | batchId         | Unique batch identifier                        |
+/// |   1    | clearingPrice   | Computed uniform clearing price                |
+/// |   2    | totalBuyVolume  | Sum of matched buy order amounts               |
+/// |   3    | totalSellVolume | Sum of matched sell order amounts              |
+/// |   4    | orderCount      | Number of orders in the batch                  |
+/// |   5    | ordersRoot      | Merkle root of all orders                      |
+/// |   6    | whitelistRoot   | Merkle root of whitelist (0 if PERMISSIONLESS) |
+/// |   7    | feeRate         | Fee rate in basis points (0-1000)              |
+/// |   8    | protocolFee     | Computed protocol fee amount                   |
+/// | 9..24  | fills[0..15]    | Pro-rata fill amounts per order                |
 ///
 /// ## Emergency Controls
 ///
@@ -58,10 +61,17 @@ contract BatchVerifier is IBatchVerifier, Ownable2Step {
     /// @dev When disabled, verify() will revert
     bool private _enabled;
 
+    /// @notice Block number when verifier was disabled (0 if enabled)
+    uint64 public disabledAtBlock;
+
     // ============ Constants ============
 
-    /// @notice Number of public inputs expected by the circuit
-    uint256 public constant NUM_PUBLIC_INPUTS = 9;
+    /// @notice Number of public inputs expected by the circuit (9 base + 16 fills)
+    uint256 public constant NUM_PUBLIC_INPUTS = 25;
+
+    /// @notice Maximum disable duration in blocks (~48 hours at 12s/block)
+    /// @dev After this duration, anyone can call forceEnable()
+    uint64 public constant MAX_DISABLE_DURATION = 14_400;
 
     // ============ Constructor ============
 
@@ -81,7 +91,6 @@ contract BatchVerifier is IBatchVerifier, Ownable2Step {
     /// @inheritdoc IBatchVerifier
     function verify(bytes calldata proof, bytes32[] calldata publicInputs)
         external
-        view
         override
         returns (bool)
     {
@@ -125,6 +134,7 @@ contract BatchVerifier is IBatchVerifier, Ownable2Step {
     function enable() external onlyOwner {
         if (!_enabled) {
             _enabled = true;
+            disabledAtBlock = 0;
             emit VerifierStatusChanged(true);
         }
     }
@@ -135,8 +145,31 @@ contract BatchVerifier is IBatchVerifier, Ownable2Step {
     function disable() external onlyOwner {
         if (_enabled) {
             _enabled = false;
+            disabledAtBlock = uint64(block.number);
             emit VerifierStatusChanged(false);
         }
+    }
+
+    /// @notice Force enable the verifier after MAX_DISABLE_DURATION
+    /// @dev Callable by anyone — prevents permanent settlement blockage
+    function forceEnable() external {
+        if (_enabled) revert Latch__VerifierAlreadyEnabled();
+        uint64 requiredBlock = disabledAtBlock + MAX_DISABLE_DURATION;
+        if (uint64(block.number) < requiredBlock) {
+            revert Latch__DisableDurationNotExpired(uint64(block.number), requiredBlock);
+        }
+        _enabled = true;
+        disabledAtBlock = 0;
+        emit VerifierStatusChanged(true);
+    }
+
+    /// @notice Get remaining blocks until force enable becomes available
+    /// @return Remaining blocks (0 if force enable is available or verifier is enabled)
+    function blocksUntilForceEnable() external view returns (uint64) {
+        if (_enabled || disabledAtBlock == 0) return 0;
+        uint64 requiredBlock = disabledAtBlock + MAX_DISABLE_DURATION;
+        if (uint64(block.number) >= requiredBlock) return 0;
+        return requiredBlock - uint64(block.number);
     }
 
     /// @notice Check if the verifier is operational

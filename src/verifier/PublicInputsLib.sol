@@ -9,17 +9,18 @@ import {Constants} from "../types/Constants.sol";
 ///
 /// ## Public Inputs Order (MUST match Noir circuit exactly)
 ///
-/// | Index | Field           | Noir Type  | Solidity Type |
-/// |-------|-----------------|------------|---------------|
-/// |   0   | batchId         | pub Field  | bytes32       |
-/// |   1   | clearingPrice   | pub Field  | bytes32       |
-/// |   2   | totalBuyVolume  | pub Field  | bytes32       |
-/// |   3   | totalSellVolume | pub Field  | bytes32       |
-/// |   4   | orderCount      | pub Field  | bytes32       |
-/// |   5   | ordersRoot      | pub Field  | bytes32       |
-/// |   6   | whitelistRoot   | pub Field  | bytes32       |
-/// |   7   | feeRate         | pub Field  | bytes32       |
-/// |   8   | protocolFee     | pub Field  | bytes32       |
+/// | Index  | Field           | Noir Type      | Solidity Type |
+/// |--------|-----------------|----------------|---------------|
+/// |   0    | batchId         | pub Field      | bytes32       |
+/// |   1    | clearingPrice   | pub Field      | bytes32       |
+/// |   2    | totalBuyVolume  | pub Field      | bytes32       |
+/// |   3    | totalSellVolume | pub Field      | bytes32       |
+/// |   4    | orderCount      | pub Field      | bytes32       |
+/// |   5    | ordersRoot      | pub Field      | bytes32       |
+/// |   6    | whitelistRoot   | pub Field      | bytes32       |
+/// |   7    | feeRate         | pub Field      | bytes32       |
+/// |   8    | protocolFee     | pub Field      | bytes32       |
+/// | 9..24  | fills[0..15]    | pub [u128; 16] | bytes32[16]   |
 ///
 library PublicInputsLib {
     // ============ Index Constants ============
@@ -51,9 +52,14 @@ library PublicInputsLib {
     /// @notice Index for protocolFee in public inputs array
     uint256 internal constant IDX_PROTOCOL_FEE = 8;
 
+    /// @notice Starting index for fills in public inputs array
+    uint256 internal constant IDX_FILLS_START = 9;
 
-    /// @notice Total number of public inputs
-    uint256 internal constant NUM_PUBLIC_INPUTS = 9;
+    /// @notice Number of fill slots (matches BATCH_SIZE in circuit)
+    uint256 internal constant NUM_FILLS = 16;
+
+    /// @notice Total number of public inputs (9 base + 16 fills)
+    uint256 internal constant NUM_PUBLIC_INPUTS = 25;
 
     // ============ Structs ============
 
@@ -78,6 +84,8 @@ library PublicInputsLib {
         bytes32 feeRate;
         /// @notice [8] Computed protocol fee amount
         bytes32 protocolFee;
+        /// @notice [9..24] Pro-rata fill amounts per order
+        bytes32[16] fills;
     }
 
     // ============ Type Bounds Constants ============
@@ -128,10 +136,13 @@ library PublicInputsLib {
         publicInputs[6] = inputs.whitelistRoot;
         publicInputs[7] = inputs.feeRate;
         publicInputs[8] = inputs.protocolFee;
+        for (uint256 i = 0; i < NUM_FILLS; i++) {
+            publicInputs[IDX_FILLS_START + i] = inputs.fills[i];
+        }
     }
 
     /// @notice Encode from individual values (convenience function)
-    /// @return publicInputs Array of bytes32 in circuit order
+    /// @return publicInputs Array of bytes32 in circuit order (fills default to zero)
     function encodeValues(
         bytes32 batchId,
         bytes32 clearingPrice,
@@ -153,6 +164,36 @@ library PublicInputsLib {
         publicInputs[6] = whitelistRoot;
         publicInputs[7] = feeRate;
         publicInputs[8] = protocolFee;
+        // fills[9..24] default to bytes32(0)
+    }
+
+    /// @notice Encode from individual values with fills
+    /// @return publicInputs Array of bytes32 in circuit order
+    function encodeValuesWithFills(
+        bytes32 batchId,
+        bytes32 clearingPrice,
+        bytes32 totalBuyVolume,
+        bytes32 totalSellVolume,
+        bytes32 orderCount,
+        bytes32 ordersRoot,
+        bytes32 whitelistRoot,
+        bytes32 feeRate,
+        bytes32 protocolFee,
+        bytes32[16] memory fills
+    ) internal pure returns (bytes32[] memory publicInputs) {
+        publicInputs = new bytes32[](NUM_PUBLIC_INPUTS);
+        publicInputs[0] = batchId;
+        publicInputs[1] = clearingPrice;
+        publicInputs[2] = totalBuyVolume;
+        publicInputs[3] = totalSellVolume;
+        publicInputs[4] = orderCount;
+        publicInputs[5] = ordersRoot;
+        publicInputs[6] = whitelistRoot;
+        publicInputs[7] = feeRate;
+        publicInputs[8] = protocolFee;
+        for (uint256 i = 0; i < NUM_FILLS; i++) {
+            publicInputs[IDX_FILLS_START + i] = fills[i];
+        }
     }
 
     // ============ Decoding Functions ============
@@ -174,6 +215,9 @@ library PublicInputsLib {
         inputs.whitelistRoot = publicInputs[6];
         inputs.feeRate = publicInputs[7];
         inputs.protocolFee = publicInputs[8];
+        for (uint256 i = 0; i < NUM_FILLS; i++) {
+            inputs.fills[i] = publicInputs[IDX_FILLS_START + i];
+        }
     }
 
     // ============ Validation Functions ============
@@ -396,5 +440,22 @@ library PublicInputsLib {
         inputs.whitelistRoot = publicInputs[IDX_WHITELIST_ROOT];
         inputs.feeRate = publicInputs[IDX_FEE_RATE];
         inputs.protocolFee = publicInputs[IDX_PROTOCOL_FEE];
+        for (uint256 i = 0; i < NUM_FILLS; i++) {
+            inputs.fills[i] = publicInputs[IDX_FILLS_START + i];
+        }
+    }
+
+    // ============ Fill Accessor Functions ============
+
+    /// @notice Get fill amount for a specific order index
+    /// @param publicInputs The public inputs array
+    /// @param orderIndex The order index (0-15)
+    /// @return The fill amount as uint128
+    function getFill(bytes32[] memory publicInputs, uint256 orderIndex) internal pure returns (uint128) {
+        uint256 value = uint256(publicInputs[IDX_FILLS_START + orderIndex]);
+        if (value > MAX_UINT128) {
+            revert PublicInputOverflow(IDX_FILLS_START + orderIndex, value, MAX_UINT128);
+        }
+        return uint128(value);
     }
 }

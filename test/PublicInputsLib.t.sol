@@ -285,13 +285,13 @@ contract PublicInputsLibOverflowTest is Test {
     }
 
     function test_ValidateAndDecode_InvalidLength() public {
-        bytes32[] memory publicInputs = new bytes32[](8); // Wrong length
+        bytes32[] memory publicInputs = new bytes32[](24); // Wrong length
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 PublicInputsLib.InvalidPublicInputsLength.selector,
-                9,
-                8
+                25,
+                24
             )
         );
         this.validateAndDecodeWrapper(publicInputs, TEST_FEE_RATE);
@@ -447,7 +447,7 @@ contract PublicInputsLibOverflowTest is Test {
     }
 
     function _createValidPublicInputsStatic() internal pure returns (bytes32[] memory publicInputs) {
-        publicInputs = new bytes32[](9);
+        publicInputs = new bytes32[](25);
         publicInputs[0] = bytes32(uint256(TEST_BATCH_ID));
         publicInputs[1] = bytes32(uint256(TEST_CLEARING_PRICE));
         publicInputs[2] = bytes32(uint256(TEST_BUY_VOLUME));
@@ -457,5 +457,6 @@ contract PublicInputsLibOverflowTest is Test {
         publicInputs[6] = TEST_WHITELIST_ROOT;
         publicInputs[7] = bytes32(uint256(TEST_FEE_RATE));
         publicInputs[8] = bytes32(uint256(TEST_PROTOCOL_FEE));
+        // fills[9..24] default to bytes32(0)
     }
 }

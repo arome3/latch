@@ -15,6 +15,7 @@ import {
     Commitment,
     Batch,
     Order,
+    RevealSlot,
     Claimable,
     ClaimStatus,
     SettledBatchData
@@ -28,11 +29,7 @@ import {
     Latch__PILengthInvalid,
     Latch__PIBatchIdMismatch,
     Latch__PICountMismatch,
-    Latch__PIRootMismatch,
     Latch__PIClearingPriceZero,
-    Latch__PIClearingPriceMismatch,
-    Latch__PIBuyVolumeMismatch,
-    Latch__PISellVolumeMismatch,
     Latch__InsufficientSolverLiquidity
 } from "../src/types/Errors.sol";
 import {IWhitelistRegistry} from "../src/interfaces/IWhitelistRegistry.sol";
@@ -92,7 +89,7 @@ contract MockBatchVerifier is IBatchVerifier {
         emit VerifierStatusChanged(_enabled);
     }
 
-    function verify(bytes calldata, bytes32[] calldata) external view returns (bool) {
+    function verify(bytes calldata, bytes32[] calldata) external returns (bool) {
         return enabled;
     }
 
@@ -101,7 +98,7 @@ contract MockBatchVerifier is IBatchVerifier {
     }
 
     function getPublicInputsCount() external pure returns (uint256) {
-        return 9;
+        return 25;
     }
 }
 
@@ -122,15 +119,15 @@ contract TestLatchHook is LatchHook {
     /// @notice Receive ETH for testing
     receive() external payable {}
 
-    /// @notice Get the revealed order for a trader
-    function getOrder(PoolId poolId, uint256 batchId, address trader) external view returns (Order memory) {
-        Order[] storage orders = _revealedOrders[poolId][batchId];
-        for (uint256 i = 0; i < orders.length; i++) {
-            if (orders[i].trader == trader) {
-                return orders[i];
+    /// @notice Get the revealed slot for a trader
+    function getRevealSlot(PoolId poolId, uint256 batchId, address trader) external view returns (RevealSlot memory) {
+        RevealSlot[] storage slots = _revealedSlots[poolId][batchId];
+        for (uint256 i = 0; i < slots.length; i++) {
+            if (slots[i].trader == trader) {
+                return slots[i];
             }
         }
-        return Order({amount: 0, limitPrice: 0, trader: address(0), isBuy: false});
+        return RevealSlot({trader: address(0), isBuy: false});
     }
 }
 
@@ -262,7 +259,7 @@ contract SettlementPhaseTest is Test {
         return bytes32(PoseidonLib.computeRoot(leaves));
     }
 
-    /// @notice Build valid public inputs for settlement
+    /// @notice Build valid public inputs for settlement (25 elements: 9 base + 16 fills)
     function _buildPublicInputs(
         uint256 batchId,
         uint128 clearingPrice,
@@ -272,7 +269,23 @@ contract SettlementPhaseTest is Test {
         bytes32 ordersRoot,
         bytes32 whitelistRoot
     ) internal pure returns (bytes32[] memory) {
-        bytes32[] memory inputs = new bytes32[](9);
+        return _buildPublicInputsWithFills(
+            batchId, clearingPrice, buyVolume, sellVolume, orderCount, ordersRoot, whitelistRoot, new uint128[](0)
+        );
+    }
+
+    /// @notice Build valid public inputs with explicit fills
+    function _buildPublicInputsWithFills(
+        uint256 batchId,
+        uint128 clearingPrice,
+        uint128 buyVolume,
+        uint128 sellVolume,
+        uint256 orderCount,
+        bytes32 ordersRoot,
+        bytes32 whitelistRoot,
+        uint128[] memory fills
+    ) internal pure returns (bytes32[] memory) {
+        bytes32[] memory inputs = new bytes32[](25);
         inputs[0] = bytes32(batchId);
         inputs[1] = bytes32(uint256(clearingPrice));
         inputs[2] = bytes32(uint256(buyVolume));
@@ -286,6 +299,10 @@ contract SettlementPhaseTest is Test {
         uint256 matchedVolume = buyVolume < sellVolume ? buyVolume : sellVolume;
         uint256 protocolFee = (matchedVolume * 30) / 10000;
         inputs[8] = bytes32(protocolFee);
+        // Fill slots [9..24]
+        for (uint256 i = 0; i < fills.length && i < 16; i++) {
+            inputs[9 + i] = bytes32(uint256(fills[i]));
+        }
         return inputs;
     }
 
@@ -351,18 +368,22 @@ contract SettlementPhaseTest is Test {
         // Compute expected values
         bytes32 ordersRoot = _computeOrdersRoot(orders);
 
-        // The clearing price algorithm picks the first price (after descending sort) that maximizes matched volume
-        // With buy@1000e18 (100 ETH) and sell@950e18 (80 ETH):
-        // - At both prices, matched volume = 80 ETH
-        // - Since 1000e18 comes first (descending), clearing price = 1000e18
-        bytes32[] memory publicInputs = _buildPublicInputs(
+        // Proof-delegated: fills come from PI[9..24], trusted from ZK proof
+        // With buy@1000e18 (100 ETH) and sell@950e18 (80 ETH), clearing price 1000e18:
+        // - Buyer fill = 80 ether (matched), Seller fill = 80 ether (matched)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether; // buyer fill
+        fills[1] = 80 ether; // seller fill
+
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
             batchId,
-            1000e18, // Clearing price (first price in descending order with max volume)
+            1000e18, // Clearing price
             80 ether, // Buy volume matched
             80 ether, // Sell volume matched
             2,       // Order count
             ordersRoot,
-            bytes32(0) // No whitelist
+            bytes32(0), // No whitelist
+            fills
         );
 
         // Settle the batch
@@ -386,8 +407,11 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // Expect the BatchSettled event
@@ -402,8 +426,11 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         vm.prank(settler);
@@ -463,8 +490,11 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // First settlement succeeds
@@ -483,8 +513,11 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // Disable verifier
@@ -498,10 +531,10 @@ contract SettlementPhaseTest is Test {
     function test_settleBatch_revertsInvalidPublicInputs_wrongLength() public {
         _setupSettlePhaseWithOrders();
 
-        // Wrong length (6 instead of 9)
-        bytes32[] memory publicInputs = new bytes32[](6);
+        // Wrong length (9 instead of 25)
+        bytes32[] memory publicInputs = new bytes32[](9);
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__PILengthInvalid.selector, 9, 6));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PILengthInvalid.selector, 25, 9));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
@@ -534,35 +567,24 @@ contract SettlementPhaseTest is Test {
         hook.settleBatch(poolKey, "", publicInputs);
     }
 
-    function test_settleBatch_revertsInvalidPublicInputs_wrongOrdersRoot() public {
-        (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
-
-        bytes32 correctRoot = _computeOrdersRoot(orders);
-        bytes32 wrongRoot = keccak256("wrong_root");
-
-        // Use wrong orders root
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, wrongRoot, bytes32(0)
-        );
-
-        vm.expectRevert(abi.encodeWithSelector(Latch__PIRootMismatch.selector, correctRoot, wrongRoot));
-        vm.prank(settler);
-        hook.settleBatch(poolKey, "", publicInputs);
-    }
+    // Note: test_settleBatch_revertsInvalidPublicInputs_wrongOrdersRoot removed
+    // In proof-delegated settlement, ordersRoot is not validated on-chain (trusted from ZK proof)
 
     function test_settleBatch_revertsInvalidPublicInputs_zeroClearingPriceWithOrders() public {
-        (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
+        (uint256 batchId,) = _setupSettlePhaseWithOrders();
 
-        bytes32 ordersRoot = _computeOrdersRoot(orders);
-        // Use zero clearing price with orders — Fix #4 binding check catches this first:
-        // On-chain computeClearingPrice returns 1000e18, but PI[1] = 0
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 0, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        // In proof-delegated model, PIClearingPriceZero is a safety check:
+        // clearingPrice must be non-zero when matched volume > 0
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        // protocolFee must also match: (80e18 * 30) / 10000 = 0.24e18
+        // But with clearingPrice=0 and buyVolume=80, sellVolume=80, the zero check fires
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 0, 80 ether, 80 ether, 2, bytes32(0), bytes32(0), fills
         );
 
-        // Fix #4: PIClearingPriceMismatch fires before PIClearingPriceZero because
-        // the binding check (PI[1] vs on-chain) comes before the zero check
-        vm.expectRevert(abi.encodeWithSelector(Latch__PIClearingPriceMismatch.selector, uint256(1000e18), uint256(0)));
+        vm.expectRevert(Latch__PIClearingPriceZero.selector);
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
@@ -591,8 +613,11 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         uint256 settleBlock = block.number;
@@ -610,15 +635,8 @@ contract SettlementPhaseTest is Test {
         assertEq(data.settledAt, settleBlock, "Settled block should match");
     }
 
-    function test_getRevealedOrders() public {
-        (uint256 batchId, Order[] memory expectedOrders) = _setupSettlePhaseWithOrders();
-
-        Order[] memory actualOrders = hook.getRevealedOrders(poolId, batchId);
-
-        assertEq(actualOrders.length, expectedOrders.length, "Order count should match");
-        assertEq(actualOrders[0].trader, expectedOrders[0].trader, "Order 0 trader should match");
-        assertEq(actualOrders[1].trader, expectedOrders[1].trader, "Order 1 trader should match");
-    }
+    // Note: test_getRevealedOrders removed — getRevealedOrders() no longer exists
+    // In proof-delegated model, full order data is emitted via OrderRevealedData events
 
     // ============ Gas Tests ============
 
@@ -626,8 +644,11 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         uint256 gasBefore = gasleft();
@@ -638,9 +659,9 @@ contract SettlementPhaseTest is Test {
         // Log gas usage
         emit log_named_uint("Gas used for settleBatch (2 orders)", gasUsed);
 
-        // Sanity check - Poseidon hashing is expensive (~300K per hash)
-        // With 2 orders: ~600K for encoding + ~300K for merkle = ~1.5M total
-        assertLt(gasUsed, 2_000_000, "Gas usage should be reasonable for Poseidon");
+        // Proof-delegated: no on-chain ClearingPriceLib or Poseidon computation
+        // Gas should be much lower — mainly storage writes for claimables
+        assertLt(gasUsed, 500_000, "Gas usage should be low for proof-delegated settlement");
     }
 
     function test_settleBatch_proRataAllocation() public {
@@ -679,15 +700,22 @@ contract SettlementPhaseTest is Test {
         // Advance to SETTLE
         vm.roll(block.number + REVEAL_DURATION + 1);
 
-        // Get orders and compute root
-        Order[] memory orders = hook.getRevealedOrders(poolId, batchId);
+        // Build orders for root computation (proof-delegated: root trusted from proof)
+        Order[] memory orders = new Order[](3);
+        orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
+        orders[1] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader2, isBuy: true});
+        orders[2] = Order({amount: 100 ether, limitPrice: 900e18, trader: trader3, isBuy: false});
         bytes32 ordersRoot = _computeOrdersRoot(orders);
 
-        // Build public inputs - clearing price is 1000e18 (highest price with max matched volume)
-        // At price 1000: demand=200 (both buys), supply=100 (sell@900<=1000) → matched=100
-        // At price 900: demand=200, supply=100 → matched=100 (same, but 1000 comes first descending)
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 100 ether, 100 ether, 3, ordersRoot, bytes32(0)
+        // Proof-delegated: fills specify pro-rata allocation directly
+        // At clearing price 1000e18: demand=200, supply=100 → each buyer gets 50 ether
+        uint128[] memory fills = new uint128[](3);
+        fills[0] = 50 ether; // trader1 buyer fill (pro-rata: 100 * 100/200)
+        fills[1] = 50 ether; // trader2 buyer fill (pro-rata: 100 * 100/200)
+        fills[2] = 100 ether; // trader3 seller fill (fully matched)
+
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 100 ether, 100 ether, 3, ordersRoot, bytes32(0), fills
         );
 
         vm.prank(settler);
@@ -756,13 +784,16 @@ contract SettlementPhaseTest is Test {
         // Advance to SETTLE
         vm.roll(block.number + REVEAL_DURATION + 1);
 
-        // Build public inputs
+        // Build public inputs with fills
         Order[] memory orders = new Order[](2);
         orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
         orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // Get claimable token0 (ETH) amount — it's the matched buy volume = 80 ether
@@ -803,8 +834,11 @@ contract SettlementPhaseTest is Test {
         orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
         orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // Solver sends excess ETH (100 ether when only 80 needed)
@@ -844,8 +878,11 @@ contract SettlementPhaseTest is Test {
         orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
         orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        uint128[] memory fills = new uint128[](2);
+        fills[0] = 80 ether;
+        fills[1] = 80 ether;
+        bytes32[] memory publicInputs = _buildPublicInputsWithFills(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         // Solver sends insufficient ETH

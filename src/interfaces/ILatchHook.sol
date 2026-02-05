@@ -61,6 +61,26 @@ interface ILatchHook is ILatchHookMinimal {
     /// @param trader The trader's address
     event OrderRevealed(PoolId indexed poolId, uint256 indexed batchId, address indexed trader);
 
+    /// @notice Emitted when an order is revealed — full order data for off-chain solver consumption
+    /// @dev In proof-delegated settlement, solvers read this event to reconstruct orders off-chain
+    /// @dev This data is NOT stored on-chain (only RevealSlot is stored)
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param trader The trader's address
+    /// @param amount Order amount
+    /// @param limitPrice Order limit price
+    /// @param isBuy True for buy order, false for sell order
+    /// @param salt Random value used in commitment
+    event OrderRevealedData(
+        PoolId indexed poolId,
+        uint256 indexed batchId,
+        address indexed trader,
+        uint128 amount,
+        uint128 limitPrice,
+        bool isBuy,
+        bytes32 salt
+    );
+
     /// @notice Emitted when a batch is settled with ZK proof
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
@@ -154,12 +174,13 @@ interface ILatchHook is ILatchHookMinimal {
     /// @param salt Random value used in the commitment
     function revealOrder(PoolKey calldata key, uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt) external;
 
-    /// @notice Settle a batch with a ZK proof of correct clearing
+    /// @notice Settle a batch with a ZK proof of correct clearing (proof-delegated)
     /// @dev Must be in SETTLE phase
-    /// @dev Proof verifies clearing price computation
+    /// @dev Proof is the SOLE authority for settlement correctness (clearingPrice, volumes, fills, ordersRoot)
+    /// @dev Contract only validates chain-state bindings (batchId, orderCount, whitelistRoot, feeRate)
     /// @param key The pool key identifying the pool
     /// @param proof The ZK proof bytes
-    /// @param publicInputs Public inputs for the proof (encoded as bytes32[])
+    /// @param publicInputs 25 public inputs: [0-8] base fields, [9-24] fills[0..15] (encoded as bytes32[])
     function settleBatch(PoolKey calldata key, bytes calldata proof, bytes32[] calldata publicInputs) external payable;
 
     /// @notice Claim tokens from a settled batch
@@ -306,4 +327,19 @@ interface ILatchHook is ILatchHookMinimal {
     /// @param batchId The batch identifier
     /// @return The whitelist root at batch start
     function getBatchWhitelistRoot(PoolId poolId, uint256 batchId) external view returns (bytes32);
+
+    // ============ Anti-Centralization Functions ============
+
+    /// @notice Force unpause all operations after MAX_PAUSE_DURATION
+    /// @dev Callable by anyone — prevents permanent fund freezing by malicious owner
+    function forceUnpause() external;
+
+    /// @notice Get remaining blocks until force unpause becomes available
+    /// @return Remaining blocks (0 if available or nothing paused)
+    function blocksUntilForceUnpause() external view returns (uint64);
+
+    /// @notice Set solver registry via timelock
+    /// @dev Only callable by the timelock address
+    /// @param _registry The new solver registry contract address
+    function setSolverRegistryViaTimelock(address _registry) external;
 }

@@ -37,7 +37,7 @@ import {
 /// @title MockLatchHookForEmergency
 /// @notice Minimal mock implementing ILatchHookMinimal for EmergencyModule tests
 contract MockLatchHookForEmergency is ILatchHookMinimal {
-    uint256 public constant LATCH_HOOK_VERSION = 1;
+    uint256 public constant LATCH_HOOK_VERSION = 2;
 
     // Configurable batch data
     mapping(bytes32 => Batch) internal _batches; // PoolId hashed => Batch
@@ -194,7 +194,7 @@ contract EmergencyModuleTest is Test {
 
     function test_constructor_revertsIncompatibleVersion() public {
         MockLatchHookBadVersion badHook = new MockLatchHookBadVersion();
-        vm.expectRevert(abi.encodeWithSelector(Latch__IncompatibleLatchHookVersion.selector, 99, 1));
+        vm.expectRevert(abi.encodeWithSelector(Latch__IncompatibleLatchHookVersion.selector, 99, 2));
         new EmergencyModule(address(badHook), owner, BOND_AMOUNT, MIN_ORDERS);
     }
 
