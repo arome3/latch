@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 
+import {ILatchHookMinimal} from "./ILatchHookMinimal.sol";
 import {
     PoolMode,
     BatchPhase,
@@ -22,7 +23,8 @@ import {
 /// @dev Implements commit-reveal batch auctions with ZK proof settlement
 /// @dev All mutating functions use PoolKey for pool identification
 /// @dev All view functions use PoolId for efficient lookups
-interface ILatchHook {
+/// @dev Inherits LATCH_HOOK_VERSION, getBatch, hasRevealed, getCommitmentDeposit from ILatchHookMinimal
+interface ILatchHook is ILatchHookMinimal {
     // ============ Events ============
 
     /// @notice Emitted when a pool is configured for batch auctions
@@ -49,7 +51,7 @@ interface ILatchHook {
         uint256 indexed batchId,
         address indexed trader,
         bytes32 commitmentHash,
-        uint96 depositAmount
+        uint128 depositAmount
     );
 
     /// @notice Emitted when an order is revealed
@@ -90,7 +92,7 @@ interface ILatchHook {
     /// @param batchId The batch identifier
     /// @param trader The trader's address
     /// @param amount Amount refunded
-    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint96 amount);
+    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount);
 
     /// @notice Emitted when a batch is finalized
     /// @param poolId The pool identifier
@@ -100,6 +102,14 @@ interface ILatchHook {
     event BatchFinalized(
         PoolId indexed poolId, uint256 indexed batchId, uint128 unclaimedAmount0, uint128 unclaimedAmount1
     );
+
+    // ============ Whitelist Snapshot Events ============
+
+    /// @notice Emitted when whitelist root is snapshotted for a batch
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param whitelistRoot The snapshotted whitelist root
+    event WhitelistRootSnapshotted(PoolId indexed poolId, uint256 indexed batchId, bytes32 whitelistRoot);
 
     // ============ Pool Configuration ============
 
@@ -115,9 +125,10 @@ interface ILatchHook {
     /// @notice Start a new batch auction for a pool
     /// @dev Can only be called when no active batch exists
     /// @dev Transitions pool to COMMIT phase
+    /// @dev Requires bond payment (batchStartBond ETH)
     /// @param key The pool key identifying the pool
     /// @return batchId The unique identifier for the new batch
-    function startBatch(PoolKey calldata key) external returns (uint256 batchId);
+    function startBatch(PoolKey calldata key) external payable returns (uint256 batchId);
 
     /// @notice Submit a commitment to place an order
     /// @dev Requires deposit of collateral tokens
@@ -129,7 +140,7 @@ interface ILatchHook {
     function commitOrder(
         PoolKey calldata key,
         bytes32 commitmentHash,
-        uint96 depositAmount,
+        uint128 depositAmount,
         bytes32[] calldata whitelistProof
     ) external payable;
 
@@ -141,7 +152,7 @@ interface ILatchHook {
     /// @param limitPrice Limit price for the order
     /// @param isBuy True for buy order, false for sell order
     /// @param salt Random value used in the commitment
-    function revealOrder(PoolKey calldata key, uint96 amount, uint128 limitPrice, bool isBuy, bytes32 salt) external;
+    function revealOrder(PoolKey calldata key, uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt) external;
 
     /// @notice Settle a batch with a ZK proof of correct clearing
     /// @dev Must be in SETTLE phase
@@ -149,7 +160,7 @@ interface ILatchHook {
     /// @param key The pool key identifying the pool
     /// @param proof The ZK proof bytes
     /// @param publicInputs Public inputs for the proof (encoded as bytes32[])
-    function settleBatch(PoolKey calldata key, bytes calldata proof, bytes32[] calldata publicInputs) external;
+    function settleBatch(PoolKey calldata key, bytes calldata proof, bytes32[] calldata publicInputs) external payable;
 
     /// @notice Claim tokens from a settled batch
     /// @dev Must be in CLAIM phase or later
@@ -190,11 +201,12 @@ interface ILatchHook {
 
     /// @notice Verify that an order was included in a settled batch
     /// @dev Allows traders to prove their order was part of the settlement
+    /// @dev Uses Poseidon hashing for ZK circuit compatibility (sorted/commutative)
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
-    /// @param orderHash The hash of the order (keccak256 of order data)
-    /// @param merkleProof The Merkle proof of inclusion
-    /// @param index The index of the order in the Merkle tree
+    /// @param orderHash The Poseidon-encoded leaf hash of the order (from computeOrderHash)
+    /// @param merkleProof The Merkle proof of inclusion (Poseidon siblings)
+    /// @param index Unused — kept for interface compatibility (Poseidon uses sorted hashing)
     /// @return included True if the order was included in the batch
     function verifyOrderInclusion(
         PoolId poolId,
@@ -210,11 +222,7 @@ interface ILatchHook {
     /// @return The current BatchPhase
     function getBatchPhase(PoolId poolId, uint256 batchId) external view returns (BatchPhase);
 
-    /// @notice Get the full batch data
-    /// @param poolId The pool identifier
-    /// @param batchId The batch identifier
-    /// @return The Batch struct with all batch data
-    function getBatch(PoolId poolId, uint256 batchId) external view returns (Batch memory);
+    // getBatch inherited from ILatchHookMinimal
 
     /// @notice Get the pool configuration
     /// @param poolId The pool identifier
@@ -252,40 +260,7 @@ interface ILatchHook {
     /// @return stats The BatchStats struct with comprehensive batch data
     function getBatchStats(PoolId poolId, uint256 batchId) external view returns (BatchStats memory stats);
 
-    /// @notice Get historical batch data for a pool
-    /// @dev Returns an array of BatchStats for sequential batches
-    /// @dev Capped at 50 batches for gas safety
-    /// @param poolId The pool identifier
-    /// @param startBatchId The first batch ID to include
-    /// @param count Maximum number of batches to return
-    /// @return history Array of BatchStats structs
-    function getBatchHistory(PoolId poolId, uint256 startBatchId, uint256 count)
-        external
-        view
-        returns (BatchStats[] memory history);
-
-    /// @notice Get clearing price history for a pool
-    /// @dev Returns newest prices first, skips unsettled batches
-    /// @dev Capped at 100 prices for gas safety
-    /// @param poolId The pool identifier
-    /// @param count Maximum number of prices to return
-    /// @return prices Array of clearing prices (newest first)
-    /// @return batchIds Array of corresponding batch IDs
-    function getPriceHistory(PoolId poolId, uint256 count)
-        external
-        view
-        returns (uint128[] memory prices, uint256[] memory batchIds);
-
-    /// @notice Get aggregate statistics for a pool
-    /// @dev Warning: Gas cost increases with number of batches
-    /// @param poolId The pool identifier
-    /// @return totalBatches Total number of batches started
-    /// @return settledBatches Number of batches that have been settled
-    /// @return totalVolume Cumulative matched volume across all batches
-    function getPoolStats(PoolId poolId)
-        external
-        view
-        returns (uint256 totalBatches, uint256 settledBatches, uint256 totalVolume);
+    // Note: getBatchHistory, getPriceHistory, getPoolStats are in TransparencyReader contract
 
     /// @notice Check if a batch exists and its settlement status
     /// @param poolId The pool identifier
@@ -295,9 +270,9 @@ interface ILatchHook {
     function batchExists(PoolId poolId, uint256 batchId) external view returns (bool exists, bool settled);
 
     /// @notice Compute order hash for verification (helper for off-chain tools)
-    /// @dev Wrapper around OrderLib.encodeOrder() for external access
+    /// @dev Returns Poseidon-encoded leaf hash matching the on-chain Merkle tree
     /// @param order The order to hash
-    /// @return The order hash (bytes32)
+    /// @return The Poseidon-encoded order leaf hash (bytes32)
     function computeOrderHash(Order calldata order) external pure returns (bytes32);
 
     /// @notice Get count of revealed orders in a batch
@@ -316,8 +291,19 @@ interface ILatchHook {
     /// @param isBuy True for buy order, false for sell order
     /// @param salt Random value for hiding order details
     /// @return The commitment hash
-    function computeCommitmentHash(address trader, uint96 amount, uint128 limitPrice, bool isBuy, bytes32 salt)
+    function computeCommitmentHash(address trader, uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt)
         external
         pure
         returns (bytes32);
+
+    // ============ EmergencyModule Helper Functions ============
+    // hasRevealed and getCommitmentDeposit inherited from ILatchHookMinimal
+
+    // ============ Whitelist Snapshot View Functions ============
+
+    /// @notice Get the snapshotted whitelist root for a batch
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @return The whitelist root at batch start
+    function getBatchWhitelistRoot(PoolId poolId, uint256 batchId) external view returns (bytes32);
 }

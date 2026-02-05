@@ -253,6 +253,9 @@ contract TransparencyModuleTest is Test {
 
         poolId = poolKey.toId();
 
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
+
         // Configure the pool
         hook.configurePool(poolKey, _createValidConfig());
     }
@@ -288,91 +291,8 @@ contract TransparencyModuleTest is Test {
         assertFalse(stats.finalized);
     }
 
-    // ============ getBatchHistory Tests ============
-
-    function test_getBatchHistory_returnsEmptyForZeroStartId() public view {
-        BatchStats[] memory history = hook.getBatchHistory(poolId, 0, 10);
-        assertEq(history.length, 0);
-    }
-
-    function test_getBatchHistory_returnsEmptyForNoExistingBatches() public view {
-        BatchStats[] memory history = hook.getBatchHistory(poolId, 1, 10);
-        assertEq(history.length, 0);
-    }
-
-    function test_getBatchHistory_returnsCorrectBatches() public {
-        // Create first batch
-        hook.startBatch(poolKey);
-        // Need to roll far enough to pass ALL phases (commit + reveal + settle + claim)
-        // With config: 10 + 10 + 10 + 100 = 130 blocks, but batch needs to be finalized
-        vm.roll(block.number + 200);
-
-        // Finalize first batch before starting second
-        // Note: Can't finalize unsettled batch, so we just check with one batch
-        BatchStats[] memory history = hook.getBatchHistory(poolId, 1, 1);
-
-        assertEq(history.length, 1);
-        assertEq(history[0].batchId, 1);
-    }
-
-    function test_getBatchHistory_respectsMaxCap() public {
-        // Even if we request 100 batches, it should cap at 50
-        // For this test, we just verify the cap logic works
-        BatchStats[] memory history = hook.getBatchHistory(poolId, 1, 100);
-        // Since no batches exist, should return empty
-        assertEq(history.length, 0);
-    }
-
-    function test_getBatchHistory_handlesPartialRange() public {
-        // Start 2 batches
-        hook.startBatch(poolKey);
-        vm.roll(block.number + 200);
-        hook.startBatch(poolKey);
-
-        // Request 10 batches starting from 1, should only get 2
-        BatchStats[] memory history = hook.getBatchHistory(poolId, 1, 10);
-        assertEq(history.length, 2);
-    }
-
-    // ============ getPriceHistory Tests ============
-
-    function test_getPriceHistory_returnsEmptyForNoBatches() public view {
-        (uint128[] memory prices, uint256[] memory batchIds) = hook.getPriceHistory(poolId, 10);
-
-        assertEq(prices.length, 0);
-        assertEq(batchIds.length, 0);
-    }
-
-    function test_getPriceHistory_returnsEmptyForUnsettledBatches() public {
-        // Start a batch but don't settle it
-        hook.startBatch(poolKey);
-
-        (uint128[] memory prices, uint256[] memory batchIds) = hook.getPriceHistory(poolId, 10);
-
-        assertEq(prices.length, 0);
-        assertEq(batchIds.length, 0);
-    }
-
-    // ============ getPoolStats Tests ============
-
-    function test_getPoolStats_returnsZerosForNewPool() public view {
-        (uint256 totalBatches, uint256 settledBatches, uint256 totalVolume) = hook.getPoolStats(poolId);
-
-        assertEq(totalBatches, 0);
-        assertEq(settledBatches, 0);
-        assertEq(totalVolume, 0);
-    }
-
-    function test_getPoolStats_countsStartedBatches() public {
-        // Start a batch and verify it's counted
-        hook.startBatch(poolKey);
-
-        (uint256 totalBatches, uint256 settledBatches, uint256 totalVolume) = hook.getPoolStats(poolId);
-
-        assertEq(totalBatches, 1);
-        assertEq(settledBatches, 0); // Not settled
-        assertEq(totalVolume, 0);
-    }
+    // Note: getBatchHistory, getPriceHistory, getPoolStats tests are in TransparencyReader.t.sol
+    // These functions were moved to a separate contract to reduce LatchHook size
 
     // ============ batchExists Tests ============
 
@@ -403,7 +323,7 @@ contract TransparencyModuleTest is Test {
         });
 
         bytes32 hash = hook.computeOrderHash(order);
-        bytes32 expected = OrderLib.encodeOrder(order);
+        bytes32 expected = bytes32(OrderLib.encodeAsLeaf(order));
 
         assertEq(hash, expected);
     }
@@ -512,8 +432,8 @@ contract TransparencyModuleTest is Test {
         hook.batchExists(poolId, 1);
         uint256 gasUsed = gasBefore - gasleft();
 
-        // Should be under 5,000 gas
-        assertLt(gasUsed, 5000, "batchExists exceeds gas budget");
+        // Should be under 6,000 gas (increased for new bond/emergency state storage)
+        assertLt(gasUsed, 6000, "batchExists exceeds gas budget");
     }
 
     function test_gas_computeOrderHash() public view {
@@ -528,8 +448,8 @@ contract TransparencyModuleTest is Test {
         hook.computeOrderHash(order);
         uint256 gasUsed = gasBefore - gasleft();
 
-        // Should be under 10,000 gas (includes external call overhead)
-        assertLt(gasUsed, 10000, "computeOrderHash exceeds gas budget");
+        // Should be under 300,000 gas (Poseidon hashing is ~10x more expensive than keccak256)
+        assertLt(gasUsed, 300000, "computeOrderHash exceeds gas budget");
     }
 
     function test_gas_getRevealedOrderCount() public {

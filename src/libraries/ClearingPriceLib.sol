@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Order} from "../types/LatchTypes.sol";
+import {Latch__SettlementOverflow} from "../types/Errors.sol";
 
 /// @title ClearingPriceLib
 /// @notice Library for computing uniform clearing prices in batch auctions
@@ -9,6 +10,7 @@ import {Order} from "../types/LatchTypes.sol";
 library ClearingPriceLib {
     /// @notice Compute the uniform clearing price for a batch of orders
     /// @dev Uses supply/demand curve intersection to find price that maximizes volume
+    /// @dev Fix #2.5: Inlines volume computation into main loop to reduce overhead
     /// @param orders Array of revealed orders
     /// @return clearingPrice The uniform clearing price
     /// @return buyVolume Total matched buy volume
@@ -32,7 +34,23 @@ library ClearingPriceLib {
 
         for (uint256 i = 0; i < prices.length; i++) {
             uint128 price = prices[i];
-            (uint128 demandAtPrice, uint128 supplyAtPrice) = _computeVolumesAtPrice(orders, price);
+
+            // Fix #2.5: Inline volume computation to reduce function call overhead
+            // Fix #2.6: Use uint256 accumulators to prevent overflow
+            uint256 buyVol;
+            uint256 sellVol;
+            for (uint256 j = 0; j < orders.length; j++) {
+                if (orders[j].isBuy && orders[j].limitPrice >= price) {
+                    buyVol += orders[j].amount;
+                } else if (!orders[j].isBuy && orders[j].limitPrice <= price) {
+                    sellVol += orders[j].amount;
+                }
+            }
+            if (buyVol > type(uint128).max || sellVol > type(uint128).max) {
+                revert Latch__SettlementOverflow();
+            }
+            uint128 demandAtPrice = uint128(buyVol);
+            uint128 supplyAtPrice = uint128(sellVol);
 
             // Matched volume is minimum of supply and demand
             uint128 matchedVolume = demandAtPrice < supplyAtPrice ? demandAtPrice : supplyAtPrice;
@@ -40,37 +58,17 @@ library ClearingPriceLib {
             if (matchedVolume > maxVolume) {
                 maxVolume = matchedVolume;
                 clearingPrice = price;
-                buyVolume = demandAtPrice < supplyAtPrice ? demandAtPrice : supplyAtPrice;
-                sellVolume = buyVolume;
+                buyVolume = matchedVolume;
+                sellVolume = matchedVolume;
             }
         }
 
         return (clearingPrice, buyVolume, sellVolume);
     }
 
-    /// @notice Compute volumes at a specific price
-    /// @dev Buy orders: willing to pay >= price; Sell orders: willing to accept <= price
-    /// @param orders Array of orders
-    /// @param price Price to compute volumes at
-    /// @return buyVolume Total buy volume at or above price
-    /// @return sellVolume Total sell volume at or below price
-    function _computeVolumesAtPrice(Order[] memory orders, uint128 price)
-        internal
-        pure
-        returns (uint128 buyVolume, uint128 sellVolume)
-    {
-        for (uint256 i = 0; i < orders.length; i++) {
-            // Note: Order struct uses `limitPrice` not `price`
-            if (orders[i].isBuy && orders[i].limitPrice >= price) {
-                buyVolume += orders[i].amount;
-            } else if (!orders[i].isBuy && orders[i].limitPrice <= price) {
-                sellVolume += orders[i].amount;
-            }
-        }
-    }
-
     /// @notice Compute matched volumes for each order at clearing price
     /// @dev Implements pro-rata filling when supply/demand is imbalanced
+    /// @dev Fix #2.6: Uses uint256 accumulators with overflow checks
     /// @param orders Array of orders
     /// @param clearingPrice The uniform clearing price
     /// @return matchedBuyAmounts Array of matched amounts for buy orders
@@ -83,17 +81,24 @@ library ClearingPriceLib {
         matchedBuyAmounts = new uint128[](orders.length);
         matchedSellAmounts = new uint128[](orders.length);
 
-        // First pass: calculate total eligible volumes
-        uint128 totalEligibleBuy = 0;
-        uint128 totalEligibleSell = 0;
+        // First pass: calculate total eligible volumes using uint256 accumulators
+        uint256 totalEligibleBuyU256 = 0;
+        uint256 totalEligibleSellU256 = 0;
 
         for (uint256 i = 0; i < orders.length; i++) {
             if (orders[i].isBuy && orders[i].limitPrice >= clearingPrice) {
-                totalEligibleBuy += orders[i].amount;
+                totalEligibleBuyU256 += orders[i].amount;
             } else if (!orders[i].isBuy && orders[i].limitPrice <= clearingPrice) {
-                totalEligibleSell += orders[i].amount;
+                totalEligibleSellU256 += orders[i].amount;
             }
         }
+
+        // Check overflow before downcasting
+        if (totalEligibleBuyU256 > type(uint128).max || totalEligibleSellU256 > type(uint128).max) {
+            revert Latch__SettlementOverflow();
+        }
+        uint128 totalEligibleBuy = uint128(totalEligibleBuyU256);
+        uint128 totalEligibleSell = uint128(totalEligibleSellU256);
 
         // Determine the matched volume (minimum of supply and demand)
         uint128 matchedVolume = totalEligibleBuy < totalEligibleSell ? totalEligibleBuy : totalEligibleSell;
@@ -102,15 +107,36 @@ library ClearingPriceLib {
             return (matchedBuyAmounts, matchedSellAmounts);
         }
 
-        // Second pass: allocate pro-rata
+        // Second pass: allocate pro-rata with rounding remainder correction
+        uint128 allocatedBuy = 0;
+        uint128 allocatedSell = 0;
+        uint256 lastBuyIdx;
+        uint256 lastSellIdx;
+        bool hasBuy = false;
+        bool hasSell = false;
+
         for (uint256 i = 0; i < orders.length; i++) {
             if (orders[i].isBuy && orders[i].limitPrice >= clearingPrice) {
-                // Pro-rata allocation for buys
-                matchedBuyAmounts[i] = uint128((uint256(orders[i].amount) * matchedVolume) / totalEligibleBuy);
+                uint128 amt = uint128((uint256(orders[i].amount) * matchedVolume) / totalEligibleBuy);
+                matchedBuyAmounts[i] = amt;
+                allocatedBuy += amt;
+                lastBuyIdx = i;
+                hasBuy = true;
             } else if (!orders[i].isBuy && orders[i].limitPrice <= clearingPrice) {
-                // Pro-rata allocation for sells
-                matchedSellAmounts[i] = uint128((uint256(orders[i].amount) * matchedVolume) / totalEligibleSell);
+                uint128 amt = uint128((uint256(orders[i].amount) * matchedVolume) / totalEligibleSell);
+                matchedSellAmounts[i] = amt;
+                allocatedSell += amt;
+                lastSellIdx = i;
+                hasSell = true;
             }
+        }
+
+        // Assign rounding remainder to last eligible trader
+        if (hasBuy && allocatedBuy < matchedVolume) {
+            matchedBuyAmounts[lastBuyIdx] += (matchedVolume - allocatedBuy);
+        }
+        if (hasSell && allocatedSell < matchedVolume) {
+            matchedSellAmounts[lastSellIdx] += (matchedVolume - allocatedSell);
         }
     }
 

@@ -187,7 +187,7 @@ contract CommitPhaseTest is Test {
         uint256 indexed batchId,
         address indexed trader,
         bytes32 commitmentHash,
-        uint96 depositAmount
+        uint128 depositAmount
     );
 
     function setUp() public {
@@ -237,6 +237,9 @@ contract CommitPhaseTest is Test {
         vm.deal(trader1, 100 ether);
         vm.deal(trader2, 100 ether);
         vm.deal(trader3, 100 ether);
+
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
     }
 
     // ============ startBatch Tests ============
@@ -333,7 +336,7 @@ contract CommitPhaseTest is Test {
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
-        uint96 depositAmount = 100 ether;
+        uint128 depositAmount = 100 ether;
 
         vm.prank(trader1);
         hook.commitOrder(poolKey, commitmentHash, depositAmount, new bytes32[](0));
@@ -352,7 +355,7 @@ contract CommitPhaseTest is Test {
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
-        uint96 depositAmount = 100 ether;
+        uint128 depositAmount = 100 ether;
 
         uint256 balanceBefore = token.balanceOf(trader1);
         uint256 hookBalanceBefore = token.balanceOf(address(hook));
@@ -492,7 +495,7 @@ contract CommitPhaseTest is Test {
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
-        uint96 depositAmount = 100 ether;
+        uint128 depositAmount = 100 ether;
 
         vm.expectEmit(true, true, true, true);
         emit OrderCommitted(poolId, 1, trader1, commitmentHash, depositAmount);
@@ -571,7 +574,7 @@ contract CommitPhaseTest is Test {
         hook.startBatch(ethPoolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 1 ether, 1000e18, true, bytes32("salt"));
-        uint96 depositAmount = 1 ether;
+        uint128 depositAmount = 1 ether;
 
         uint256 balanceBefore = trader1.balance;
         uint256 hookBalanceBefore = address(hook).balance;
@@ -597,7 +600,7 @@ contract CommitPhaseTest is Test {
         hook.startBatch(ethPoolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 1 ether, 1000e18, true, bytes32("salt"));
-        uint96 depositAmount = 1 ether;
+        uint128 depositAmount = 1 ether;
         uint256 excessAmount = 0.5 ether;
 
         uint256 balanceBefore = trader1.balance;
@@ -623,7 +626,7 @@ contract CommitPhaseTest is Test {
         hook.startBatch(ethPoolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 1 ether, 1000e18, true, bytes32("salt"));
-        uint96 depositAmount = 1 ether;
+        uint128 depositAmount = 1 ether;
 
         vm.prank(trader1);
         vm.expectRevert(abi.encodeWithSelector(Latch__InsufficientDeposit.selector, depositAmount, 0.5 ether));
@@ -684,7 +687,7 @@ contract CommitPhaseTest is Test {
 
     // ============ Fuzz Tests ============
 
-    function testFuzz_commitOrder_anyValidDeposit(uint96 depositAmount) public {
+    function testFuzz_commitOrder_anyValidDeposit(uint128 depositAmount) public {
         vm.assume(depositAmount > 0);
         vm.assume(depositAmount <= 1000 ether); // Within minted balance
 
@@ -746,7 +749,7 @@ contract CommitPhaseTest is Test {
 
     function _computeCommitmentHash(
         address trader,
-        uint96 amount,
+        uint128 amount,
         uint128 limitPrice,
         bool isBuy,
         bytes32 salt

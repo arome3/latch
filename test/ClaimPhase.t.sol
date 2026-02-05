@@ -130,7 +130,7 @@ contract ClaimPhaseTest is Test {
     address public anyone = address(0x3001);
 
     // Order parameters
-    uint96 public constant DEPOSIT_AMOUNT = 100 ether;
+    uint128 public constant DEPOSIT_AMOUNT = 100 ether;
     uint128 public constant LIMIT_PRICE = 1000e18;
     bytes32 public constant SALT = keccak256("test_salt");
 
@@ -195,6 +195,14 @@ contract ClaimPhaseTest is Test {
         vm.deal(trader3, 100 ether);
         vm.deal(settler, 100 ether);
         vm.deal(anyone, 100 ether);
+
+        // Fix #2.3: Solver needs token0 to provide liquidity for buy orders
+        token0.mint(settler, 10000 ether);
+        vm.prank(settler);
+        token0.approve(address(hook), type(uint256).max);
+
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
     }
 
     function _createValidConfig() internal pure returns (PoolConfig memory) {
@@ -212,7 +220,7 @@ contract ClaimPhaseTest is Test {
     /// @notice Compute commitment hash matching the contract's implementation
     function _computeCommitmentHash(
         address trader,
-        uint96 amount,
+        uint128 amount,
         uint128 limitPrice,
         bool isBuy,
         bytes32 salt
@@ -220,7 +228,7 @@ contract ClaimPhaseTest is Test {
         return keccak256(abi.encodePacked(
             Constants.COMMITMENT_DOMAIN,
             trader,
-            uint128(amount),
+            amount,
             limitPrice,
             isBuy,
             salt
@@ -424,7 +432,7 @@ contract ClaimPhaseTest is Test {
         hook.claimTokens(poolKey, batchId);
     }
 
-    function test_claimTokens_revertsAlreadyFinalized() public {
+    function test_claimTokens_worksAfterFinalization() public {
         uint256 batchId = _setupSettledBatch();
 
         // Advance past claim period and finalize
@@ -433,10 +441,15 @@ contract ClaimPhaseTest is Test {
         vm.prank(anyone);
         hook.finalizeBatch(poolKey, batchId);
 
-        // Now claiming should revert
-        vm.expectRevert(Latch__BatchAlreadyFinalized.selector);
+        // Claiming should succeed even after finalization (no permanent token lockup)
+        (Claimable memory claimable,) = hook.getClaimable(poolId, batchId, trader1);
+        uint256 token0Before = token0.balanceOf(trader1);
+
         vm.prank(trader1);
         hook.claimTokens(poolKey, batchId);
+
+        uint256 token0After = token0.balanceOf(trader1);
+        assertEq(token0After - token0Before, claimable.amount0, "Should claim token0 after finalization");
     }
 
     function test_claimTokens_revertsNoBatchActive() public {
@@ -469,9 +482,15 @@ contract ClaimPhaseTest is Test {
 
         vm.roll(block.number + SETTLE_DURATION + CLAIM_DURATION + 1);
 
-        // Expect BatchFinalized event
+        // Get expected unclaimed amounts (both traders haven't claimed yet)
+        (Claimable memory claim1,) = hook.getClaimable(poolId, batchId, trader1);
+        (Claimable memory claim2,) = hook.getClaimable(poolId, batchId, trader2);
+        uint128 expectedUnclaimed0 = claim1.amount0 + claim2.amount0;
+        uint128 expectedUnclaimed1 = claim1.amount1 + claim2.amount1;
+
+        // Expect BatchFinalized event with accurate unclaimed amounts
         vm.expectEmit(true, true, false, true);
-        emit ILatchHookEvents.BatchFinalized(poolId, batchId, 0, 0);
+        emit ILatchHookEvents.BatchFinalized(poolId, batchId, expectedUnclaimed0, expectedUnclaimed1);
 
         vm.prank(anyone);
         hook.finalizeBatch(poolKey, batchId);

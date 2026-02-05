@@ -8,6 +8,7 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 
 import {ILatchHook} from "../../src/interfaces/ILatchHook.sol";
+import {ILatchHookMinimal} from "../../src/interfaces/ILatchHookMinimal.sol";
 import {IWhitelistRegistry} from "../../src/interfaces/IWhitelistRegistry.sol";
 import {IBatchVerifier} from "../../src/interfaces/IBatchVerifier.sol";
 
@@ -95,7 +96,7 @@ contract InterfacesTest is Test {
     function test_ILatchHook_viewFunctionSelectors() public pure {
         bytes4 getCurrentBatchId = ILatchHook.getCurrentBatchId.selector;
         bytes4 getBatchPhase = ILatchHook.getBatchPhase.selector;
-        bytes4 getBatch = ILatchHook.getBatch.selector;
+        bytes4 getBatch = ILatchHookMinimal.getBatch.selector; // Declared in ILatchHookMinimal
         bytes4 getPoolConfig = ILatchHook.getPoolConfig.selector;
         bytes4 getCommitment = ILatchHook.getCommitment.selector;
         bytes4 getClaimable = ILatchHook.getClaimable.selector;
@@ -209,13 +210,17 @@ contract MockLatchHook is ILatchHook {
     mapping(PoolId => uint256) public currentBatchIds;
     mapping(PoolId => PoolConfig) public poolConfigs;
 
-    function startBatch(PoolKey calldata key) external override returns (uint256 batchId) {
+    function LATCH_HOOK_VERSION() external pure override returns (uint256) {
+        return 1;
+    }
+
+    function startBatch(PoolKey calldata key) external payable override returns (uint256 batchId) {
         PoolId poolId = PoolIdLibrary.toId(key);
         batchId = ++currentBatchIds[poolId];
         emit BatchStarted(poolId, batchId, uint64(block.number), uint64(block.number + 10));
     }
 
-    function commitOrder(PoolKey calldata key, bytes32 commitmentHash, uint96 depositAmount, bytes32[] calldata)
+    function commitOrder(PoolKey calldata key, bytes32 commitmentHash, uint128 depositAmount, bytes32[] calldata)
         external
         payable
         override
@@ -224,12 +229,12 @@ contract MockLatchHook is ILatchHook {
         emit OrderCommitted(poolId, currentBatchIds[poolId], msg.sender, commitmentHash, depositAmount);
     }
 
-    function revealOrder(PoolKey calldata key, uint96, uint128, bool, bytes32) external override {
+    function revealOrder(PoolKey calldata key, uint128, uint128, bool, bytes32) external override {
         PoolId poolId = PoolIdLibrary.toId(key);
         emit OrderRevealed(poolId, currentBatchIds[poolId], msg.sender);
     }
 
-    function settleBatch(PoolKey calldata key, bytes calldata, bytes32[] calldata) external override {
+    function settleBatch(PoolKey calldata key, bytes calldata, bytes32[] calldata) external payable override {
         PoolId poolId = PoolIdLibrary.toId(key);
         emit BatchSettled(poolId, currentBatchIds[poolId], 1000e18, 100e18, 100e18, bytes32(0));
     }
@@ -241,7 +246,7 @@ contract MockLatchHook is ILatchHook {
 
     function refundDeposit(PoolKey calldata key, uint256 batchId) external override {
         PoolId poolId = PoolIdLibrary.toId(key);
-        emit DepositRefunded(poolId, batchId, msg.sender, 100);
+        emit DepositRefunded(poolId, batchId, msg.sender, uint128(100));
     }
 
     function finalizeBatch(PoolKey calldata key, uint256 batchId) external override {
@@ -320,7 +325,7 @@ contract MockLatchHook is ILatchHook {
         return false;
     }
 
-    function computeCommitmentHash(address trader, uint96 amount, uint128 limitPrice, bool isBuy, bytes32 salt)
+    function computeCommitmentHash(address trader, uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt)
         external
         pure
         override
@@ -346,27 +351,7 @@ contract MockLatchHook is ILatchHook {
         });
     }
 
-    function getBatchHistory(PoolId, uint256, uint256) external pure override returns (BatchStats[] memory) {
-        return new BatchStats[](0);
-    }
-
-    function getPriceHistory(PoolId, uint256)
-        external
-        pure
-        override
-        returns (uint128[] memory prices, uint256[] memory batchIds)
-    {
-        return (new uint128[](0), new uint256[](0));
-    }
-
-    function getPoolStats(PoolId poolId)
-        external
-        view
-        override
-        returns (uint256 totalBatches, uint256 settledBatches, uint256 totalVolume)
-    {
-        return (currentBatchIds[poolId], 0, 0);
-    }
+    // Note: getBatchHistory, getPriceHistory, getPoolStats are in TransparencyReader contract
 
     function batchExists(PoolId, uint256) external pure override returns (bool exists, bool settled) {
         return (false, false);
@@ -377,6 +362,32 @@ contract MockLatchHook is ILatchHook {
     }
 
     function getRevealedOrderCount(PoolId, uint256) external pure override returns (uint256) {
+        return 0;
+    }
+
+    // ============ EmergencyModule Helper Functions ============
+
+    function hasRevealed(PoolId, uint256, address) external pure override returns (bool) {
+        return false;
+    }
+
+    function getCommitmentDeposit(PoolId, uint256, address) external pure override returns (uint128) {
+        return 0;
+    }
+
+    function getBatchWhitelistRoot(PoolId, uint256) external pure override returns (bytes32) {
+        return bytes32(0);
+    }
+
+    function executeEmergencyRefund(address, address, uint256) external pure override {
+        // No-op for mock
+    }
+
+    function markEmergencyRefunded(PoolId, uint256, address) external pure override {
+        // No-op for mock
+    }
+
+    function getCommitmentStatus(PoolId, uint256, address) external pure override returns (uint8) {
         return 0;
     }
 }

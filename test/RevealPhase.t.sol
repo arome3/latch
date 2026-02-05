@@ -141,7 +141,7 @@ contract RevealPhaseTest is Test {
     address public trader2 = address(0x1002);
 
     // Order parameters
-    uint96 public constant DEPOSIT_AMOUNT = 100 ether;
+    uint128 public constant DEPOSIT_AMOUNT = 100 ether;
     uint128 public constant LIMIT_PRICE = 1000e18;
     bytes32 public constant SALT = keccak256("test_salt");
 
@@ -192,6 +192,9 @@ contract RevealPhaseTest is Test {
         // Give traders some ETH for gas
         vm.deal(trader1, 100 ether);
         vm.deal(trader2, 100 ether);
+
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
     }
 
     function _createValidConfig() internal pure returns (PoolConfig memory) {
@@ -209,7 +212,7 @@ contract RevealPhaseTest is Test {
     /// @notice Compute commitment hash matching the contract's implementation
     function _computeCommitmentHash(
         address trader,
-        uint96 amount,
+        uint128 amount,
         uint128 limitPrice,
         bool isBuy,
         bytes32 salt
@@ -217,7 +220,7 @@ contract RevealPhaseTest is Test {
         return keccak256(abi.encodePacked(
             Constants.COMMITMENT_DOMAIN,
             trader,
-            uint128(amount), // Cast to uint128 to match OrderLib
+            amount, // uint128 matches OrderLib
             limitPrice,
             isBuy,
             salt
@@ -345,7 +348,7 @@ contract RevealPhaseTest is Test {
         _setupRevealPhase();
 
         // Try to reveal with wrong amount
-        uint96 wrongAmount = 50 ether;
+        uint128 wrongAmount = 50 ether;
         bytes32 expectedHash = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
         bytes32 actualHash = _computeCommitmentHash(trader1, wrongAmount, LIMIT_PRICE, true, SALT);
 
@@ -435,7 +438,7 @@ contract RevealPhaseTest is Test {
         hook.startBatch(poolKey);
 
         // Commit with an amount larger than deposit
-        uint96 orderAmount = 200 ether; // More than DEPOSIT_AMOUNT
+        uint128 orderAmount = 200 ether; // More than DEPOSIT_AMOUNT
         bytes32 commitmentHash = _computeCommitmentHash(trader1, orderAmount, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
@@ -454,7 +457,7 @@ contract RevealPhaseTest is Test {
         hook.startBatch(poolKey);
 
         // Commit with smaller amount than deposit (trader wants flexibility)
-        uint96 orderAmount = 50 ether; // Less than DEPOSIT_AMOUNT
+        uint128 orderAmount = 50 ether; // Less than DEPOSIT_AMOUNT
         bytes32 commitmentHash = _computeCommitmentHash(trader1, orderAmount, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
@@ -633,5 +636,5 @@ contract RevealPhaseTest is Test {
 /// @notice Interface with events for expectEmit
 interface ILatchHookEvents {
     event OrderRevealed(PoolId indexed poolId, uint256 indexed batchId, address indexed trader);
-    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint96 amount);
+    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount);
 }

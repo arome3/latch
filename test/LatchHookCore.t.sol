@@ -26,7 +26,7 @@ import {Constants} from "../src/types/Constants.sol";
 import {
     Latch__PoolNotInitialized,
     Latch__PoolAlreadyInitialized,
-    Latch__InvalidPoolConfig,
+    Latch__PoolConfigOutOfBounds,
     Latch__ZeroAddress,
     Latch__ZeroWhitelistRoot,
     Latch__ZeroCommitmentHash,
@@ -165,6 +165,9 @@ contract LatchHookCoreTest is Test {
         });
 
         poolId = poolKey.toId();
+
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
     }
 
     // ============ Constructor Tests ============
@@ -334,7 +337,7 @@ contract LatchHookCoreTest is Test {
             whitelistRoot: bytes32(0)
         });
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPoolConfig.selector, "commitDuration too small"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PoolConfigOutOfBounds.selector, 0, 0, Constants.MIN_PHASE_DURATION, Constants.MAX_PHASE_DURATION));
         hook.configurePool(poolKey, config);
     }
 
@@ -349,7 +352,7 @@ contract LatchHookCoreTest is Test {
             whitelistRoot: bytes32(0)
         });
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPoolConfig.selector, "revealDuration too small"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PoolConfigOutOfBounds.selector, 1, 0, Constants.MIN_PHASE_DURATION, Constants.MAX_PHASE_DURATION));
         hook.configurePool(poolKey, config);
     }
 
@@ -364,7 +367,7 @@ contract LatchHookCoreTest is Test {
             whitelistRoot: bytes32(0)
         });
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPoolConfig.selector, "settleDuration too small"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PoolConfigOutOfBounds.selector, 2, 0, Constants.MIN_PHASE_DURATION, Constants.MAX_PHASE_DURATION));
         hook.configurePool(poolKey, config);
     }
 
@@ -379,7 +382,7 @@ contract LatchHookCoreTest is Test {
             whitelistRoot: bytes32(0)
         });
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPoolConfig.selector, "claimDuration too small"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PoolConfigOutOfBounds.selector, 3, 0, Constants.MIN_PHASE_DURATION, Constants.MAX_PHASE_DURATION));
         hook.configurePool(poolKey, config);
     }
 
@@ -394,7 +397,7 @@ contract LatchHookCoreTest is Test {
             whitelistRoot: bytes32(0)
         });
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPoolConfig.selector, "commitDuration too large"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PoolConfigOutOfBounds.selector, 0, uint256(Constants.MAX_PHASE_DURATION + 1), Constants.MIN_PHASE_DURATION, Constants.MAX_PHASE_DURATION));
         hook.configurePool(poolKey, config);
     }
 
@@ -482,7 +485,7 @@ contract LatchHookCoreTest is Test {
 
     function test_computeCommitmentHash_isDeterministic() public view {
         address trader = address(0x123);
-        uint96 amount = 100e18;
+        uint128 amount = 100e18;
         uint128 limitPrice = 1000e18;
         bool isBuy = true;
         bytes32 salt = keccak256("salt");
@@ -495,7 +498,7 @@ contract LatchHookCoreTest is Test {
 
     function test_computeCommitmentHash_changesWithDifferentInputs() public view {
         address trader = address(0x123);
-        uint96 amount = 100e18;
+        uint128 amount = 100e18;
         uint128 limitPrice = 1000e18;
         bool isBuy = true;
         bytes32 salt = keccak256("salt");
@@ -515,7 +518,7 @@ contract LatchHookCoreTest is Test {
     function test_computeCommitmentHash_usesDomainSeparator() public view {
         // Verify the hash includes the domain separator by computing manually
         address trader = address(0x123);
-        uint96 amount = 100e18;
+        uint128 amount = 100e18;
         uint128 limitPrice = 1000e18;
         bool isBuy = true;
         bytes32 salt = keccak256("salt");
@@ -539,7 +542,7 @@ contract LatchHookCoreTest is Test {
     function test_computeCommitmentHash_assemblyMatchesReference() public view {
         // Test multiple values to ensure assembly optimization is correct
         address[3] memory traders = [address(0x1), address(0xDEADBEEF), address(type(uint160).max)];
-        uint96[3] memory amounts = [uint96(1), uint96(1e18), uint96(type(uint96).max)];
+        uint128[3] memory amounts = [uint128(1), uint128(1e18), uint128(type(uint128).max)];
         uint128[3] memory prices = [uint128(1), uint128(1e18), uint128(type(uint128).max)];
         bool[2] memory isBuys = [true, false];
         bytes32[3] memory salts = [bytes32(0), keccak256("test"), bytes32(type(uint256).max)];
@@ -736,7 +739,7 @@ contract LatchHookCoreTest is Test {
         vm.assume(salt1 != salt2);
 
         address trader = address(0x123);
-        uint96 amount = 100e18;
+        uint128 amount = 100e18;
         uint128 limitPrice = 1000e18;
         bool isBuy = true;
 

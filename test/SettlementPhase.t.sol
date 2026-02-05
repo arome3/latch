@@ -25,7 +25,15 @@ import {
     Latch__WrongPhase,
     Latch__BatchAlreadySettled,
     Latch__InvalidProof,
-    Latch__InvalidPublicInputs
+    Latch__PILengthInvalid,
+    Latch__PIBatchIdMismatch,
+    Latch__PICountMismatch,
+    Latch__PIRootMismatch,
+    Latch__PIClearingPriceZero,
+    Latch__PIClearingPriceMismatch,
+    Latch__PIBuyVolumeMismatch,
+    Latch__PISellVolumeMismatch,
+    Latch__InsufficientSolverLiquidity
 } from "../src/types/Errors.sol";
 import {IWhitelistRegistry} from "../src/interfaces/IWhitelistRegistry.sol";
 import {IBatchVerifier} from "../src/interfaces/IBatchVerifier.sol";
@@ -72,6 +80,10 @@ contract MockWhitelistRegistry is IWhitelistRegistry {
 }
 
 /// @title MockBatchVerifier for settlement phase tests
+/// @dev INTENTIONAL ZK BYPASS: Auto-approves all proofs when enabled=true.
+///      This is standard practice for ZK protocol testing — the verifier contract is a
+///      trusted external dependency whose correctness is validated separately.
+///      Settlement logic tests focus on public input validation and state transitions.
 contract MockBatchVerifier is IBatchVerifier {
     bool public enabled = true;
 
@@ -143,7 +155,7 @@ contract SettlementPhaseTest is Test {
     address public settler = address(0x2001);
 
     // Order parameters
-    uint96 public constant DEPOSIT_AMOUNT = 100 ether;
+    uint128 public constant DEPOSIT_AMOUNT = 100 ether;
     uint128 public constant LIMIT_PRICE = 1000e18;
     bytes32 public constant SALT = keccak256("test_salt");
 
@@ -199,6 +211,14 @@ contract SettlementPhaseTest is Test {
         vm.deal(trader2, 100 ether);
         vm.deal(trader3, 100 ether);
         vm.deal(settler, 100 ether);
+
+        // Fix #2.3: Solver needs token0 to provide liquidity for buy orders
+        token0.mint(settler, 10000 ether);
+        vm.prank(settler);
+        token0.approve(address(hook), type(uint256).max);
+
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
     }
 
     function _createValidConfig() internal pure returns (PoolConfig memory) {
@@ -216,7 +236,7 @@ contract SettlementPhaseTest is Test {
     /// @notice Compute commitment hash matching the contract's implementation
     function _computeCommitmentHash(
         address trader,
-        uint96 amount,
+        uint128 amount,
         uint128 limitPrice,
         bool isBuy,
         bytes32 salt
@@ -224,7 +244,7 @@ contract SettlementPhaseTest is Test {
         return keccak256(abi.encodePacked(
             Constants.COMMITMENT_DOMAIN,
             trader,
-            uint128(amount),
+            amount,
             limitPrice,
             isBuy,
             salt
@@ -481,7 +501,7 @@ contract SettlementPhaseTest is Test {
         // Wrong length (6 instead of 9)
         bytes32[] memory publicInputs = new bytes32[](6);
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "length must be 9"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PILengthInvalid.selector, 9, 6));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
@@ -495,7 +515,7 @@ contract SettlementPhaseTest is Test {
             batchId + 1, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
         );
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "batchId mismatch"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PIBatchIdMismatch.selector, batchId, batchId + 1));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
@@ -509,20 +529,23 @@ contract SettlementPhaseTest is Test {
             batchId, 1000e18, 80 ether, 80 ether, 3, ordersRoot, bytes32(0)
         );
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "orderCount mismatch"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PICountMismatch.selector, 2, 3));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
 
     function test_settleBatch_revertsInvalidPublicInputs_wrongOrdersRoot() public {
-        (uint256 batchId,) = _setupSettlePhaseWithOrders();
+        (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
+
+        bytes32 correctRoot = _computeOrdersRoot(orders);
+        bytes32 wrongRoot = keccak256("wrong_root");
 
         // Use wrong orders root
         bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 1000e18, 80 ether, 80 ether, 2, keccak256("wrong_root"), bytes32(0)
+            batchId, 1000e18, 80 ether, 80 ether, 2, wrongRoot, bytes32(0)
         );
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "ordersRoot mismatch"));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PIRootMismatch.selector, correctRoot, wrongRoot));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
@@ -531,12 +554,15 @@ contract SettlementPhaseTest is Test {
         (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        // Use zero clearing price with orders
+        // Use zero clearing price with orders — Fix #4 binding check catches this first:
+        // On-chain computeClearingPrice returns 1000e18, but PI[1] = 0
         bytes32[] memory publicInputs = _buildPublicInputs(
             batchId, 0, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
         );
 
-        vm.expectRevert(abi.encodeWithSelector(Latch__InvalidPublicInputs.selector, "clearingPrice zero with orders"));
+        // Fix #4: PIClearingPriceMismatch fires before PIClearingPriceZero because
+        // the binding check (PI[1] vs on-chain) comes before the zero check
+        vm.expectRevert(abi.encodeWithSelector(Latch__PIClearingPriceMismatch.selector, uint256(1000e18), uint256(0)));
         vm.prank(settler);
         hook.settleBatch(poolKey, "", publicInputs);
     }
@@ -657,10 +683,11 @@ contract SettlementPhaseTest is Test {
         Order[] memory orders = hook.getRevealedOrders(poolId, batchId);
         bytes32 ordersRoot = _computeOrdersRoot(orders);
 
-        // Build public inputs - clearing price is 900e18 (sell limit price)
-        // Matched volume = min(200, 100) = 100
+        // Build public inputs - clearing price is 1000e18 (highest price with max matched volume)
+        // At price 1000: demand=200 (both buys), supply=100 (sell@900<=1000) → matched=100
+        // At price 900: demand=200, supply=100 → matched=100 (same, but 1000 comes first descending)
         bytes32[] memory publicInputs = _buildPublicInputs(
-            batchId, 900e18, 100 ether, 100 ether, 3, ordersRoot, bytes32(0)
+            batchId, 1000e18, 100 ether, 100 ether, 3, ordersRoot, bytes32(0)
         );
 
         vm.prank(settler);
@@ -673,6 +700,158 @@ contract SettlementPhaseTest is Test {
         // Both buyers should receive equal amounts (pro-rata)
         assertEq(claimable1.amount0, claimable2.amount0, "Pro-rata should give equal amounts to equal orders");
         assertEq(claimable1.amount0, 50 ether, "Each buyer should get 50% of order");
+    }
+    // ============ Fix #3.2: ETH as token0 settlement tests ============
+
+    /// @notice Set up a pool with ETH as token0 and settle with ETH
+    function _setupETHToken0Pool() internal returns (PoolKey memory ethPoolKey, PoolId ethPoolId) {
+        // Deploy a fresh token for currency1 (quote)
+        ERC20Mock quoteToken = new ERC20Mock("Quote", "QT", 18);
+
+        ethPoolKey = PoolKey({
+            currency0: Currency.wrap(address(0)),  // Native ETH
+            currency1: Currency.wrap(address(quoteToken)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: hook
+        });
+        ethPoolId = ethPoolKey.toId();
+
+        // Fund traders with quote token
+        quoteToken.mint(trader1, 1000 ether);
+        quoteToken.mint(trader2, 1000 ether);
+        vm.prank(trader1);
+        quoteToken.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
+        quoteToken.approve(address(hook), type(uint256).max);
+
+        return (ethPoolKey, ethPoolId);
+    }
+
+    function test_settleBatch_withETHAsToken0() public {
+        (PoolKey memory ethPoolKey, PoolId ethPoolId) = _setupETHToken0Pool();
+
+        hook.configurePool(ethPoolKey, _createValidConfig());
+        uint256 batchId = hook.startBatch(ethPoolKey);
+
+        // Trader1: buy (deposits quote token, receives ETH)
+        bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
+        bytes32[] memory proof = new bytes32[](0);
+        vm.prank(trader1);
+        hook.commitOrder(ethPoolKey, hash1, 100 ether, proof);
+
+        // Trader2: sell (deposits quote token, receives payment in quote)
+        bytes32 salt2 = keccak256("trader2_salt");
+        bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
+        vm.prank(trader2);
+        hook.commitOrder(ethPoolKey, hash2, 80 ether, proof);
+
+        // Advance to REVEAL
+        vm.roll(block.number + COMMIT_DURATION + 1);
+        vm.prank(trader1);
+        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT);
+        vm.prank(trader2);
+        hook.revealOrder(ethPoolKey, 80 ether, 950e18, false, salt2);
+
+        // Advance to SETTLE
+        vm.roll(block.number + REVEAL_DURATION + 1);
+
+        // Build public inputs
+        Order[] memory orders = new Order[](2);
+        orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
+        orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
+        bytes32 ordersRoot = _computeOrdersRoot(orders);
+        bytes32[] memory publicInputs = _buildPublicInputs(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        );
+
+        // Get claimable token0 (ETH) amount — it's the matched buy volume = 80 ether
+        // Solver sends ETH as msg.value
+        vm.prank(settler);
+        hook.settleBatch{value: 80 ether}(ethPoolKey, "", publicInputs);
+
+        assertTrue(hook.isBatchSettled(ethPoolId, batchId), "Batch should be settled");
+    }
+
+    function test_settleBatch_withETHAsToken0_refundsExcess() public {
+        (PoolKey memory ethPoolKey,) = _setupETHToken0Pool();
+
+        hook.configurePool(ethPoolKey, _createValidConfig());
+        uint256 batchId = hook.startBatch(ethPoolKey);
+
+        // Trader1: buy
+        bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
+        bytes32[] memory proof = new bytes32[](0);
+        vm.prank(trader1);
+        hook.commitOrder(ethPoolKey, hash1, 100 ether, proof);
+
+        // Trader2: sell
+        bytes32 salt2 = keccak256("trader2_salt");
+        bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
+        vm.prank(trader2);
+        hook.commitOrder(ethPoolKey, hash2, 80 ether, proof);
+
+        vm.roll(block.number + COMMIT_DURATION + 1);
+        vm.prank(trader1);
+        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT);
+        vm.prank(trader2);
+        hook.revealOrder(ethPoolKey, 80 ether, 950e18, false, salt2);
+
+        vm.roll(block.number + REVEAL_DURATION + 1);
+
+        Order[] memory orders = new Order[](2);
+        orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
+        orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
+        bytes32 ordersRoot = _computeOrdersRoot(orders);
+        bytes32[] memory publicInputs = _buildPublicInputs(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        );
+
+        // Solver sends excess ETH (100 ether when only 80 needed)
+        uint256 settlerBalBefore = settler.balance;
+        vm.prank(settler);
+        hook.settleBatch{value: 100 ether}(ethPoolKey, "", publicInputs);
+
+        // Excess 20 ether should be refunded
+        assertEq(settler.balance, settlerBalBefore - 80 ether, "Excess ETH should be refunded");
+    }
+
+    function test_settleBatch_withETHAsToken0_revertsInsufficientValue() public {
+        (PoolKey memory ethPoolKey,) = _setupETHToken0Pool();
+
+        hook.configurePool(ethPoolKey, _createValidConfig());
+        uint256 batchId = hook.startBatch(ethPoolKey);
+
+        bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
+        bytes32[] memory proof = new bytes32[](0);
+        vm.prank(trader1);
+        hook.commitOrder(ethPoolKey, hash1, 100 ether, proof);
+
+        bytes32 salt2 = keccak256("trader2_salt");
+        bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
+        vm.prank(trader2);
+        hook.commitOrder(ethPoolKey, hash2, 80 ether, proof);
+
+        vm.roll(block.number + COMMIT_DURATION + 1);
+        vm.prank(trader1);
+        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT);
+        vm.prank(trader2);
+        hook.revealOrder(ethPoolKey, 80 ether, 950e18, false, salt2);
+
+        vm.roll(block.number + REVEAL_DURATION + 1);
+
+        Order[] memory orders = new Order[](2);
+        orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
+        orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
+        bytes32 ordersRoot = _computeOrdersRoot(orders);
+        bytes32[] memory publicInputs = _buildPublicInputs(
+            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0)
+        );
+
+        // Solver sends insufficient ETH
+        vm.expectRevert(abi.encodeWithSelector(Latch__InsufficientSolverLiquidity.selector, 80 ether));
+        vm.prank(settler);
+        hook.settleBatch{value: 50 ether}(ethPoolKey, "", publicInputs);
     }
 }
 

@@ -14,7 +14,7 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolMode, BatchPhase, PoolConfig} from "../src/types/LatchTypes.sol";
 import {Constants} from "../src/types/Constants.sol";
 import {PauseFlagsLib} from "../src/libraries/PauseFlagsLib.sol";
-import {Latch__OperationPaused} from "../src/types/Errors.sol";
+import {Latch__CommitPaused} from "../src/types/Errors.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title MockPoolManager
@@ -140,6 +140,9 @@ contract EmergencyPauseTest is Test {
             hooks: hook
         });
         poolId = poolKey.toId();
+
+        // Disable batch start bond for existing tests
+        hook.setBatchStartBond(0);
     }
 
     // ============ Pause Flag Initialization Tests ============
@@ -436,7 +439,7 @@ contract EmergencyPauseTest is Test {
         // Attempt to commit should revert
         vm.deal(trader, 10 ether);
         vm.prank(trader);
-        vm.expectRevert(abi.encodeWithSelector(Latch__OperationPaused.selector, "commit"));
+        vm.expectRevert(Latch__CommitPaused.selector);
         hook.commitOrder{value: 1 ether}(
             poolKey,
             bytes32(uint256(1)),
@@ -464,7 +467,7 @@ contract EmergencyPauseTest is Test {
         // Attempt to commit should revert
         vm.deal(trader, 10 ether);
         vm.prank(trader);
-        vm.expectRevert(abi.encodeWithSelector(Latch__OperationPaused.selector, "commit"));
+        vm.expectRevert(Latch__CommitPaused.selector);
         hook.commitOrder{value: 1 ether}(
             poolKey,
             bytes32(uint256(1)),

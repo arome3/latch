@@ -341,6 +341,49 @@ contract ClearingPriceLibTest is Test {
         assertEq(buyVolume, sellVolume);
     }
 
+    function test_computeMatchedVolumes_roundingRemainderAllocated() public pure {
+        // 3 equal buyers, 1 seller — matchedVolume (100) not evenly divisible by 3
+        Order[] memory orders = new Order[](4);
+        orders[0] = Order({
+            amount: 100,
+            limitPrice: 2000 * 1e18,
+            trader: address(0x1),
+            isBuy: true
+        });
+        orders[1] = Order({
+            amount: 100,
+            limitPrice: 2000 * 1e18,
+            trader: address(0x2),
+            isBuy: true
+        });
+        orders[2] = Order({
+            amount: 100,
+            limitPrice: 2000 * 1e18,
+            trader: address(0x3),
+            isBuy: true
+        });
+        orders[3] = Order({
+            amount: 100,
+            limitPrice: 2000 * 1e18,
+            trader: address(0x4),
+            isBuy: false
+        });
+
+        uint128 clearingPrice = 2000 * 1e18;
+
+        (uint128[] memory buyMatched, uint128[] memory sellMatched) =
+            ClearingPriceLib.computeMatchedVolumes(orders, clearingPrice);
+
+        // matchedVolume = min(300, 100) = 100
+        // Each buyer gets floor(100 * 100 / 300) = 33, last buyer gets 33 + 1 = 34
+        uint128 totalBuy = buyMatched[0] + buyMatched[1] + buyMatched[2];
+        assertEq(totalBuy, 100, "Total buy allocation must equal matchedVolume exactly");
+        assertEq(buyMatched[0], 33, "First buyer gets floor allocation");
+        assertEq(buyMatched[1], 33, "Second buyer gets floor allocation");
+        assertEq(buyMatched[2], 34, "Last buyer gets floor + remainder");
+        assertEq(sellMatched[3], 100, "Seller gets full matchedVolume");
+    }
+
     // ============ Fuzz Tests ============
 
     function testFuzz_computeClearingPrice_volumeConservation(
