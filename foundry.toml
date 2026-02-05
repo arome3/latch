@@ -56,6 +56,9 @@ shrink_run_limit = 5000
 fuzz = { runs = 10000 }
 invariant = { runs = 1000 }
 
+[profile.invariant-deep]
+invariant = { runs = 128, depth = 50 }
+
 [profile.lite]
 optimizer = false
 via_ir = false

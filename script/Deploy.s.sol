@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {LatchHook} from "../src/LatchHook.sol";
+import {BatchVerifier} from "../src/verifier/BatchVerifier.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IWhitelistRegistry} from "../src/interfaces/IWhitelistRegistry.sol";
 import {IBatchVerifier} from "../src/interfaces/IBatchVerifier.sol";
@@ -46,11 +47,25 @@ contract Deploy is Script {
 
         vm.startBroadcast(config.deployerKey);
 
+        // Deploy HonkVerifier and its linked libraries
+        // RelationsLib and ZKTranscriptLib are deployed as separate contracts
+        // because they contain external functions, and Foundry auto-links them.
+        address honkVerifier = deployCode("HonkVerifier.sol:HonkVerifier");
+        console2.log("HonkVerifier deployed to:", honkVerifier);
+
+        // Deploy BatchVerifier wrapping HonkVerifier
+        BatchVerifier batchVerifierContract = new BatchVerifier(
+            honkVerifier,
+            config.hookOwner,
+            true // enabled
+        );
+        console2.log("BatchVerifier deployed to:", address(batchVerifierContract));
+
         // Deploy using CREATE2 with mined salt
         hook = new LatchHook{salt: salt}(
             IPoolManager(config.poolManager),
             IWhitelistRegistry(config.whitelistRegistry),
-            IBatchVerifier(config.batchVerifier),
+            IBatchVerifier(address(batchVerifierContract)),
             config.hookOwner
         );
 

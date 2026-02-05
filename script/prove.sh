@@ -43,5 +43,6 @@ echo "Proof:         $CIRCUIT_DIR/target/proof/proof ($(wc -c < ./target/proof/p
 echo "Public inputs: $CIRCUIT_DIR/target/proof/public_inputs ($(wc -c < ./target/proof/public_inputs) bytes)"
 echo "VK:            $CIRCUIT_DIR/target/proof/vk"
 echo ""
-echo "To regenerate the Solidity verifier:"
+echo "To regenerate the Solidity verifier (with EIP-170 split):"
 echo "  bb write_solidity_verifier -k ./target/proof/vk -o ../src/verifier/HonkVerifier.sol -t evm"
+echo "  ../script/split_verifier.sh ../src/verifier/HonkVerifier.sol"

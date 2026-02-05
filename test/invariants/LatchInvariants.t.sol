@@ -19,6 +19,7 @@ import {LatchHandler} from "./handlers/LatchHandler.sol";
 /// @notice Invariant test assertions for the Latch protocol
 /// @dev Uses handler-based testing: Foundry randomly calls LatchHandler actions,
 ///      then asserts these invariants hold after every sequence of actions.
+///      Supports multi-batch testing via action_startNewBatch.
 contract LatchInvariants is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -91,7 +92,7 @@ contract LatchInvariants is Test {
         targetContract(address(handler));
     }
 
-    // ============ Invariant: No double claim ============
+    // ============ Per-Batch Invariants ============
 
     /// @notice Claims should never exceed reveals
     function invariant_noDoubleClaim() public view {
@@ -101,8 +102,6 @@ contract LatchInvariants is Test {
             "INVARIANT: claim count must never exceed reveal count"
         );
     }
-
-    // ============ Invariant: No double refund ============
 
     /// @notice Refunds should never exceed uncommitted-unrevealed count
     function invariant_noDoubleRefund() public view {
@@ -114,21 +113,18 @@ contract LatchInvariants is Test {
         );
     }
 
-    // ============ Invariant: Token1 conservation ============
-
     /// @notice Hook's token1 balance >= deposits - refunds - claimed_token1 - fees
     /// @dev This is the critical solvency invariant
     function invariant_token1Conservation() public view {
         if (!handler.configured()) return;
 
         uint256 hookBalance = token1.balanceOf(address(hook));
-        uint256 deposited = handler.ghost_totalDeposited();
-        uint256 refunded = handler.ghost_totalRefunded();
-        uint256 claimed1 = handler.ghost_totalClaimedToken1();
-        uint256 fees = handler.ghost_protocolFeesAccrued();
+        uint256 deposited = handler.ghost_totalDeposited() + handler.ghost_totalDepositedAllBatches();
+        uint256 refunded = handler.ghost_totalRefunded() + handler.ghost_totalRefundedAllBatches();
+        uint256 claimed1 = handler.ghost_totalClaimedToken1() + handler.ghost_totalClaimedToken1AllBatches();
+        uint256 fees = handler.ghost_protocolFeesAccrued() + handler.ghost_protocolFeesAccruedAllBatches();
 
         // Hook should hold at least: deposits - refunds - claims - fees
-        // (fees are transferred to SolverRewards during settlement)
         if (deposited >= refunded + claimed1 + fees) {
             assertGe(
                 hookBalance,
@@ -138,15 +134,13 @@ contract LatchInvariants is Test {
         }
     }
 
-    // ============ Invariant: Token0 conservation ============
-
     /// @notice Hook's token0 balance >= solver_token0_in - claimed_token0
     function invariant_token0Conservation() public view {
         if (!handler.configured()) return;
 
         uint256 hookBalance = token0.balanceOf(address(hook));
-        uint256 solverIn = handler.ghost_totalSolverToken0In();
-        uint256 claimed0 = handler.ghost_totalClaimedToken0();
+        uint256 solverIn = handler.ghost_totalSolverToken0In() + handler.ghost_totalSolverToken0InAllBatches();
+        uint256 claimed0 = handler.ghost_totalClaimedToken0() + handler.ghost_totalClaimedToken0AllBatches();
 
         if (solverIn >= claimed0) {
             assertGe(
@@ -156,8 +150,6 @@ contract LatchInvariants is Test {
             );
         }
     }
-
-    // ============ Invariant: Commitment status FSM ============
 
     /// @notice CommitmentStatus transitions must be valid: NONE→PENDING→REVEALED or PENDING→REFUNDED
     function invariant_commitmentStatusFSM() public view {
@@ -195,8 +187,6 @@ contract LatchInvariants is Test {
         }
     }
 
-    // ============ Invariant: Phase monotonicity ============
-
     /// @notice Batch phase must be a valid enum value
     function invariant_phaseValid() public view {
         if (!handler.configured() || handler.currentBatchId() == 0) return;
@@ -207,8 +197,6 @@ contract LatchInvariants is Test {
 
         assertTrue(p <= 5, "INVARIANT: phase must be valid enum value (0-5)");
     }
-
-    // ============ Invariant: Settled batch immutability ============
 
     /// @notice After settlement, clearing price and volumes should not change
     function invariant_settledBatchImmutable() public view {
@@ -223,5 +211,34 @@ contract LatchInvariants is Test {
         assertTrue(hook.isBatchSettled(poolId, batchId), "INVARIANT: settled flag must be true");
         // Clearing price should be set (we bound it > 0 in handler)
         assertGt(clearingPrice, 0, "INVARIANT: clearing price must be > 0 after settlement");
+    }
+
+    // ============ Cross-Batch Invariants ============
+
+    /// @notice Total claimed + refunded across ALL batches must not exceed total deposited
+    function invariant_crossBatchConservation() public view {
+        if (!handler.configured()) return;
+
+        // Sum current batch + all completed batches
+        uint256 totalDeposited = handler.ghost_totalDeposited() + handler.ghost_totalDepositedAllBatches();
+        uint256 totalClaimed1 = handler.ghost_totalClaimedToken1() + handler.ghost_totalClaimedToken1AllBatches();
+        uint256 totalRefunded = handler.ghost_totalRefunded() + handler.ghost_totalRefundedAllBatches();
+
+        assertLe(
+            totalClaimed1 + totalRefunded,
+            totalDeposited,
+            "INVARIANT: cross-batch conservation - claimed + refunded must not exceed deposited"
+        );
+    }
+
+    /// @notice Batch ID must always increase monotonically
+    function invariant_batchIdMonotonicity() public view {
+        if (!handler.configured()) return;
+
+        uint256 batchId = handler.currentBatchId();
+        uint256 completed = handler.totalBatchesCompleted();
+
+        // Current batchId should be at least completed + 1 (first batch is ID 1)
+        assertGe(batchId, completed + 1, "INVARIANT: batchId must be >= completedBatches + 1");
     }
 }

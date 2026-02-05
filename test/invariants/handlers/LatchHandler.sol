@@ -25,6 +25,8 @@ import {ERC20Mock} from "../../mocks/ERC20Mock.sol";
 /// @title LatchHandler
 /// @notice Stateful handler for invariant testing — drives the batch lifecycle with bounded random inputs
 /// @dev Foundry calls action_* functions randomly. Ghost variables track protocol-wide accounting.
+/// @dev Supports multi-batch flows: after batch N settles and claims complete, action_startNewBatch
+///      resets per-batch state and begins batch N+1 on the same pool.
 contract LatchHandler is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -36,7 +38,7 @@ contract LatchHandler is Test {
     ERC20Mock public token0;
     ERC20Mock public token1;
 
-    // ============ Ghost Variables (Invariant Tracking) ============
+    // ============ Ghost Variables (Per-Batch — reset on new batch) ============
 
     uint256 public ghost_totalDeposited;
     uint256 public ghost_totalRefunded;
@@ -49,6 +51,16 @@ contract LatchHandler is Test {
     uint256 public ghost_revealCount;
     uint256 public ghost_claimCount;
     uint256 public ghost_refundCount;
+
+    // ============ Ghost Variables (Cross-Batch — cumulative) ============
+
+    uint256 public totalBatchesCompleted;
+    uint256 public ghost_totalDepositedAllBatches;
+    uint256 public ghost_totalClaimedToken0AllBatches;
+    uint256 public ghost_totalClaimedToken1AllBatches;
+    uint256 public ghost_totalRefundedAllBatches;
+    uint256 public ghost_totalSolverToken0InAllBatches;
+    uint256 public ghost_protocolFeesAccruedAllBatches;
 
     // ============ Handler State ============
 
@@ -116,6 +128,40 @@ contract LatchHandler is Test {
         currentBatchId = hook.startBatch(poolKey);
         configured = true;
         batchSettled = false;
+    }
+
+    /// @notice Start a new batch after the previous one has completed
+    /// @dev Enables multi-batch invariant testing by cycling through batch lifecycles
+    function action_startNewBatch() external {
+        if (!configured || !batchSettled) return;
+
+        // Must be past the claim window (FINALIZED phase)
+        BatchPhase phase = hook.getBatchPhase(poolId, currentBatchId);
+        if (phase != BatchPhase.FINALIZED) {
+            // Try to advance past claim window
+            vm.roll(block.number + CLAIM_DURATION + 1);
+            phase = hook.getBatchPhase(poolId, currentBatchId);
+            if (phase != BatchPhase.FINALIZED) return;
+        }
+
+        // Accumulate per-batch ghosts into cross-batch totals
+        _accumulateCrossBatchTotals();
+
+        // Reset per-batch state
+        _resetBatchState();
+
+        // Re-fund traders with token1 for next batch
+        for (uint256 i = 0; i < traders.length; i++) {
+            uint256 bal = token1.balanceOf(traders[i]);
+            if (bal < 1000 ether) {
+                token1.mint(traders[i], 10000 ether);
+            }
+        }
+
+        // Start next batch
+        currentBatchId = hook.startBatch(poolKey);
+        batchSettled = false;
+        totalBatchesCompleted++;
     }
 
     /// @notice Commit an order during COMMIT phase
@@ -327,7 +373,52 @@ contract LatchHandler is Test {
         } catch {}
     }
 
+    /// @notice Advance past claim window to allow new batch start
+    function action_advancePastClaim() external {
+        if (!configured || !batchSettled) return;
+        BatchPhase phase = hook.getBatchPhase(poolId, currentBatchId);
+        if (phase == BatchPhase.CLAIM) {
+            vm.roll(block.number + CLAIM_DURATION + 1);
+        }
+    }
+
     // ============ Internal Helpers ============
+
+    function _accumulateCrossBatchTotals() internal {
+        ghost_totalDepositedAllBatches += ghost_totalDeposited;
+        ghost_totalClaimedToken0AllBatches += ghost_totalClaimedToken0;
+        ghost_totalClaimedToken1AllBatches += ghost_totalClaimedToken1;
+        ghost_totalRefundedAllBatches += ghost_totalRefunded;
+        ghost_totalSolverToken0InAllBatches += ghost_totalSolverToken0In;
+        ghost_protocolFeesAccruedAllBatches += ghost_protocolFeesAccrued;
+    }
+
+    function _resetBatchState() internal {
+        // Reset per-batch ghost variables
+        ghost_totalDeposited = 0;
+        ghost_totalRefunded = 0;
+        ghost_totalClaimedToken0 = 0;
+        ghost_totalClaimedToken1 = 0;
+        ghost_totalSolverToken0In = 0;
+        ghost_protocolFeesAccrued = 0;
+        ghost_commitCount = 0;
+        ghost_revealCount = 0;
+        ghost_claimCount = 0;
+        ghost_refundCount = 0;
+
+        // Reset per-trader mappings
+        for (uint256 i = 0; i < traders.length; i++) {
+            address trader = traders[i];
+            hasCommitted[trader] = false;
+            hasRevealed[trader] = false;
+            hasClaimed[trader] = false;
+            hasRefunded[trader] = false;
+            traderAmounts[trader] = 0;
+            traderPrices[trader] = 0;
+            traderIsBuy[trader] = false;
+            traderSalts[trader] = bytes32(0);
+        }
+    }
 
     function _computeRoot(Order[] memory orders) internal pure returns (bytes32) {
         if (orders.length == 0) return bytes32(0);
