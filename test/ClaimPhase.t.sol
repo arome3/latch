@@ -239,7 +239,8 @@ contract ClaimPhaseTest is Test {
     /// @dev CRITICAL: Must match LatchHook._computeOrdersRoot() which uses Poseidon
     function _computeOrdersRoot(Order[] memory orders) internal pure returns (bytes32) {
         if (orders.length == 0) return bytes32(0);
-        uint256[] memory leaves = new uint256[](orders.length);
+        // Pad to MAX_ORDERS (16) to match circuit's fixed-size tree
+        uint256[] memory leaves = new uint256[](Constants.MAX_ORDERS);
         for (uint256 i = 0; i < orders.length; i++) {
             leaves[i] = OrderLib.encodeAsLeaf(orders[i]);
         }

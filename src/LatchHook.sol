@@ -71,6 +71,7 @@ import {
     Latch__PILengthInvalid,
     Latch__PIBatchIdMismatch,
     Latch__PICountMismatch,
+    Latch__PIRootMismatch,
     Latch__PIWhitelistMismatch,
     Latch__PIFeeMismatch,
     Latch__PIProtocolFeeMismatch,
@@ -161,6 +162,10 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @notice Revealed order slots: PoolId => batchId => RevealSlot[]
     /// @dev Stores only trader + isBuy (1 slot). Full order data emitted via OrderRevealedData event.
     mapping(PoolId => mapping(uint256 => RevealSlot[])) internal _revealedSlots;
+
+    /// @notice Order leaf hashes for ordersRoot validation: PoolId => batchId => uint256[]
+    /// @dev Computed via OrderLib.encodeAsLeaf() during reveal, used to validate PI[5] at settlement
+    mapping(PoolId => mapping(uint256 => uint256[])) internal _orderLeaves;
 
     /// @notice Track if trader has revealed (for duplicate prevention): PoolId => batchId => trader => bool
     mapping(PoolId => mapping(uint256 => mapping(address => bool))) internal _hasRevealed;
@@ -1165,6 +1170,13 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         // 4. Store minimal reveal data (1 slot vs Order's 2 slots)
         _revealedSlots[poolId][batchId].push(RevealSlot({trader: msg.sender, isBuy: isBuy}));
 
+        // 4b. Store leaf hash for ordersRoot validation at settlement
+        _orderLeaves[poolId][batchId].push(
+            OrderLib.encodeAsLeaf(
+                Order({amount: amount, limitPrice: limitPrice, trader: msg.sender, isBuy: isBuy})
+            )
+        );
+
         // 5. Mark trader as having revealed
         _hasRevealed[poolId][batchId][msg.sender] = true;
 
@@ -1397,9 +1409,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         }
     }
 
-    /// @notice Validate public inputs against on-chain state (chain-state only)
-    /// @dev Proof-delegated: clearingPrice, volumes, ordersRoot, and fills are trusted from proof
-    /// @dev Only validates values the contract can independently derive from chain state
+    /// @notice Validate public inputs against on-chain state
+    /// @dev Validates: batchId, orderCount, ordersRoot, whitelistRoot, feeRate, protocolFee, clearingPrice!=0
+    /// @dev Proof-trusted: clearingPrice, volumes, fills
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
     /// @param batch The batch storage reference
@@ -1409,7 +1421,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         uint256 batchId,
         Batch storage batch,
         bytes32[] calldata publicInputs
-    ) internal view {
+    ) internal {
         // Suppress unused variable warning
         batch;
 
@@ -1422,6 +1434,27 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         uint256 orderCount = _revealedSlots[poolId][batchId].length;
         if (uint256(publicInputs[4]) != orderCount) {
             revert Latch__PICountMismatch(orderCount, uint256(publicInputs[4]));
+        }
+
+        // [5] ordersRoot — must match Merkle root computed from revealed order leaves
+        // Circuit uses a fixed 16-leaf tree (zero-padded), so we must match that structure
+        // For empty batches (count=0), circuit returns 0
+        {
+            uint256[] storage leaves = _orderLeaves[poolId][batchId];
+            uint256 n = leaves.length;
+            bytes32 expectedRoot;
+            if (n == 0) {
+                expectedRoot = bytes32(0);
+            } else {
+                uint256[] memory paddedLeaves = new uint256[](Constants.MAX_ORDERS);
+                for (uint256 i = 0; i < n; i++) {
+                    paddedLeaves[i] = leaves[i];
+                }
+                expectedRoot = bytes32(PoseidonLib.computeRoot(paddedLeaves));
+            }
+            if (publicInputs[5] != expectedRoot) {
+                revert Latch__PIRootMismatch(expectedRoot, publicInputs[5]);
+            }
         }
 
         // [6] whitelistRoot — must match snapshotted root for COMPLIANT pools
@@ -1677,7 +1710,10 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         // 5. Mark batch as finalized
         batch.finalize();
 
-        // 6. Emit event with accurate unclaimed amounts
+        // 6. Clean up order leaves (gas refund)
+        delete _orderLeaves[poolId][batchId];
+
+        // 7. Emit event with accurate unclaimed amounts
         (uint128 unclaimed0, uint128 unclaimed1) = _calculateUnclaimedAmounts(poolId, batchId);
         emit BatchFinalized(poolId, batchId, unclaimed0, unclaimed1);
     }

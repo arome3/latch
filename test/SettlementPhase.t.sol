@@ -29,6 +29,7 @@ import {
     Latch__PILengthInvalid,
     Latch__PIBatchIdMismatch,
     Latch__PICountMismatch,
+    Latch__PIRootMismatch,
     Latch__PIClearingPriceZero,
     Latch__InsufficientSolverLiquidity
 } from "../src/types/Errors.sol";
@@ -252,7 +253,8 @@ contract SettlementPhaseTest is Test {
     /// @dev CRITICAL: Must match LatchHook._computeOrdersRoot() which uses Poseidon
     function _computeOrdersRoot(Order[] memory orders) internal pure returns (bytes32) {
         if (orders.length == 0) return bytes32(0);
-        uint256[] memory leaves = new uint256[](orders.length);
+        // Pad to MAX_ORDERS (16) to match circuit's fixed-size tree
+        uint256[] memory leaves = new uint256[](Constants.MAX_ORDERS);
         for (uint256 i = 0; i < orders.length; i++) {
             leaves[i] = OrderLib.encodeAsLeaf(orders[i]);
         }
@@ -567,21 +569,40 @@ contract SettlementPhaseTest is Test {
         hook.settleBatch(poolKey, "", publicInputs);
     }
 
-    // Note: test_settleBatch_revertsInvalidPublicInputs_wrongOrdersRoot removed
-    // In proof-delegated settlement, ordersRoot is not validated on-chain (trusted from ZK proof)
+    function test_settleBatch_revertsInvalidPublicInputs_wrongOrdersRoot() public {
+        (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
+
+        // Compute the correct root from revealed orders
+        bytes32 correctRoot = _computeOrdersRoot(orders);
+
+        // Build phantom orders with different amounts to produce a different root
+        Order[] memory phantomOrders = new Order[](2);
+        phantomOrders[0] = Order({amount: 999 ether, limitPrice: 1e18, trader: trader1, isBuy: true});
+        phantomOrders[1] = Order({amount: 999 ether, limitPrice: 1e18, trader: trader2, isBuy: false});
+        bytes32 wrongRoot = _computeOrdersRoot(phantomOrders);
+
+        // Submit PI with the wrong ordersRoot (from phantom orders)
+        bytes32[] memory publicInputs = _buildPublicInputs(
+            batchId, 1000e18, 80 ether, 80 ether, 2, wrongRoot, bytes32(0)
+        );
+
+        vm.expectRevert(abi.encodeWithSelector(Latch__PIRootMismatch.selector, correctRoot, wrongRoot));
+        vm.prank(settler);
+        hook.settleBatch(poolKey, "", publicInputs);
+    }
 
     function test_settleBatch_revertsInvalidPublicInputs_zeroClearingPriceWithOrders() public {
-        (uint256 batchId,) = _setupSettlePhaseWithOrders();
+        (uint256 batchId, Order[] memory orders) = _setupSettlePhaseWithOrders();
 
         // In proof-delegated model, PIClearingPriceZero is a safety check:
         // clearingPrice must be non-zero when matched volume > 0
+        bytes32 ordersRoot = _computeOrdersRoot(orders);
         uint128[] memory fills = new uint128[](2);
         fills[0] = 80 ether;
         fills[1] = 80 ether;
-        // protocolFee must also match: (80e18 * 30) / 10000 = 0.24e18
-        // But with clearingPrice=0 and buyVolume=80, sellVolume=80, the zero check fires
+        // Must pass correct ordersRoot so the test reaches the zero clearing price check
         bytes32[] memory publicInputs = _buildPublicInputsWithFills(
-            batchId, 0, 80 ether, 80 ether, 2, bytes32(0), bytes32(0), fills
+            batchId, 0, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
         vm.expectRevert(Latch__PIClearingPriceZero.selector);
@@ -659,9 +680,9 @@ contract SettlementPhaseTest is Test {
         // Log gas usage
         emit log_named_uint("Gas used for settleBatch (2 orders)", gasUsed);
 
-        // Proof-delegated: no on-chain ClearingPriceLib or Poseidon computation
-        // Gas should be much lower — mainly storage writes for claimables
-        assertLt(gasUsed, 500_000, "Gas usage should be low for proof-delegated settlement");
+        // Proof-delegated settlement + ordersRoot validation (Poseidon Merkle root from 16 leaves)
+        // Gas budget: storage writes for claimables + Poseidon root computation (~950K)
+        assertLt(gasUsed, 1_500_000, "Gas usage should be reasonable for proof-delegated settlement with ordersRoot validation");
     }
 
     function test_settleBatch_proRataAllocation() public {
