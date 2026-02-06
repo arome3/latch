@@ -12,7 +12,9 @@
 
 .PHONY: all install build build-sizes clean test test-v test-gas coverage \
         circuit-compile circuit-prove circuit-verify generate-verifier \
-        anvil deploy-local deploy-sepolia fmt verify-setup help
+        anvil deploy-local deploy-full-local deploy-sepolia deploy-mainnet \
+        init-pool deploy-verify solver-setup solver-start deploy-all-local \
+        fmt verify-setup help
 
 # Default target
 all: build
@@ -108,16 +110,48 @@ invariant:
 # Deployment
 # =============================================================================
 
-## Start local Anvil node
+## Start local Anvil node (with increased code size for HonkVerifier)
 anvil:
-	@anvil --block-time 1
+	@anvil --block-time 1 --code-size-limit 30000
 
-## Deploy to local Anvil
+## Deploy all contracts to local Anvil (mocks + pool + tokens)
+deploy-full-local:
+	@forge script script/DeployLocal.s.sol:DeployLocal \
+		--rpc-url http://127.0.0.1:8545 \
+		--broadcast \
+		-vvvv
+
+## Deploy to local Anvil (production contracts, requires PoolManager)
 deploy-local:
 	@forge script script/Deploy.s.sol:Deploy \
 		--rpc-url http://127.0.0.1:8545 \
 		--broadcast \
 		-vvvv
+
+## Initialize a new pool (set TOKEN0, TOKEN1, LATCH_HOOK, POOL_MANAGER env vars)
+init-pool:
+	@forge script script/InitializePool.s.sol:InitializePool \
+		--rpc-url http://127.0.0.1:8545 \
+		--broadcast \
+		-vvvv
+
+## Verify deployment (reads from deployments/{chainId}.json)
+deploy-verify:
+	@forge script script/PostDeployVerify.s.sol:PostDeployVerify \
+		--rpc-url http://127.0.0.1:8545 \
+		-vvvv
+
+## Set up solver .env from deployment output
+solver-setup:
+	@./script/setup-solver.sh
+
+## Start the solver
+solver-start:
+	@cd solver && npm run dev
+
+## Full local setup: deploy + verify + solver setup
+deploy-all-local: deploy-full-local deploy-verify solver-setup
+	@echo "Full local deployment complete!"
 
 ## Deploy to Sepolia testnet
 deploy-sepolia:
@@ -129,7 +163,7 @@ deploy-sepolia:
 
 ## Deploy to mainnet (use with caution!)
 deploy-mainnet:
-	@echo "⚠️  Deploying to MAINNET - are you sure?"
+	@echo "Deploying to MAINNET - are you sure?"
 	@read -p "Type 'yes' to continue: " confirm && [ "$$confirm" = "yes" ]
 	@forge script script/Deploy.s.sol:Deploy \
 		--rpc-url $${RPC_MAINNET} \
@@ -205,9 +239,17 @@ help:
 	@echo "  make fuzz           Run extended fuzz tests"
 	@echo ""
 	@echo "Deploy:"
-	@echo "  make anvil          Start local Anvil node"
-	@echo "  make deploy-local   Deploy to local Anvil"
-	@echo "  make deploy-sepolia Deploy to Sepolia testnet"
+	@echo "  make anvil              Start local Anvil node"
+	@echo "  make deploy-full-local  Deploy all contracts + pool + tokens (Anvil)"
+	@echo "  make deploy-local       Deploy production contracts (Anvil)"
+	@echo "  make deploy-sepolia     Deploy to Sepolia testnet"
+	@echo "  make deploy-all-local   Full setup: deploy + verify + solver"
+	@echo ""
+	@echo "Post-Deploy:"
+	@echo "  make init-pool        Initialize a new pool"
+	@echo "  make deploy-verify    Verify deployment wiring"
+	@echo "  make solver-setup     Generate solver .env"
+	@echo "  make solver-start     Start the solver"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make fmt            Format Solidity code"
