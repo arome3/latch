@@ -34,6 +34,7 @@ import {
     PoolConfig,
     PoolConfigPacked,
     Commitment,
+    RevealDeposit,
     Order,
     RevealSlot,
     Batch,
@@ -89,7 +90,9 @@ import {
     Latch__DepositBelowMinimum,
     Latch__InsufficientSolverLiquidity,
     Latch__PauseDurationNotExpired,
-    Latch__NotPaused
+    Latch__NotPaused,
+    Latch__UseClaimTokens,
+    Latch__SettlePhaseActive
 } from "./types/Errors.sol";
 import {BatchLib} from "./libraries/BatchLib.sol";
 import {MerkleLib} from "./libraries/MerkleLib.sol";
@@ -216,6 +219,16 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @notice Snapshotted whitelist roots per batch: PoolId => batchId => whitelistRoot
     mapping(PoolId => mapping(uint256 => bytes32)) internal _batchWhitelistRoots;
 
+    // ============ Dual-Token Deposit Model ============
+
+    /// @notice Reveal-phase deposits: PoolId => batchId => trader => RevealDeposit
+    /// @dev Stored at reveal time when isBuy is known. Buyers deposit token1, sellers deposit token0.
+    mapping(PoolId => mapping(uint256 => mapping(address => RevealDeposit))) internal _revealDeposits;
+
+    /// @notice Commit-phase bond amount in token1 (uniform for all traders)
+    /// @dev Set to 0 for zero-bond mode (testing). Privacy-preserving: same amount for buyers and sellers.
+    uint128 public commitBondAmount;
+
     // ============ Events ============
 
     /// @notice Emitted when pause flags are updated
@@ -233,6 +246,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
 
     /// @notice Emitted when minimum order size is updated
     event MinOrderSizeUpdated(uint128 oldSize, uint128 newSize);
+
+    /// @notice Emitted when commit bond amount is updated
+    event CommitBondAmountUpdated(uint128 oldAmount, uint128 newAmount);
 
     /// @notice Emitted when solver registry is updated
     event SolverRegistryUpdated(address oldRegistry, address newRegistry);
@@ -400,6 +416,15 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         uint128 oldSize = minOrderSize;
         minOrderSize = _minOrderSize;
         emit MinOrderSizeUpdated(oldSize, _minOrderSize);
+    }
+
+    /// @notice Set the commit bond amount for order commitments
+    /// @dev Set to 0 to disable bond (for testing). Bond is uniform for privacy.
+    /// @param _bondAmount The new bond amount in token1
+    function setCommitBondAmount(uint128 _bondAmount) external onlyOwner {
+        uint128 oldAmount = commitBondAmount;
+        commitBondAmount = _bondAmount;
+        emit CommitBondAmountUpdated(oldAmount, _bondAmount);
     }
 
     /// @notice Set the batch start bond via emergency module
@@ -1046,18 +1071,11 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     function commitOrder(
         PoolKey calldata key,
         bytes32 commitmentHash,
-        uint128 depositAmount,
         bytes32[] calldata whitelistProof
     ) external payable override nonReentrant whenCommitNotPaused {
         // 1. Validate inputs
         if (commitmentHash == bytes32(0)) {
             revert Latch__ZeroCommitmentHash();
-        }
-        if (depositAmount == 0) {
-            revert Latch__ZeroDeposit();
-        }
-        if (minOrderSize > 0 && depositAmount < minOrderSize) {
-            revert Latch__DepositBelowMinimum(depositAmount, minOrderSize);
         }
 
         PoolId poolId = key.toId();
@@ -1087,21 +1105,23 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         // 5. Whitelist verification for COMPLIANT pools (using snapshotted root)
         PoolConfig memory config = _getPoolConfig(poolId);
         if (config.mode == PoolMode.COMPLIANT) {
-            // Use the snapshotted root from batch start (Fix #4: prevents race condition)
             bytes32 snapshotRoot = _batchWhitelistRoots[poolId][batchId];
             if (snapshotRoot != bytes32(0)) {
                 whitelistRegistry.requireWhitelisted(msg.sender, snapshotRoot, whitelistProof);
             }
         }
 
-        // 6. Transfer deposit (always currency1 - quote currency)
-        _transferDepositIn(key.currency1, msg.sender, depositAmount);
+        // 6. Transfer bond in token1 (if commitBondAmount > 0)
+        uint128 bondAmt = commitBondAmount;
+        if (bondAmt > 0) {
+            _transferDepositIn(key.currency1, msg.sender, bondAmt);
+        }
 
-        // 7. Store commitment
+        // 7. Store commitment with bond amount
         _commitments[poolId][batchId][msg.sender] = Commitment({
             trader: msg.sender,
             commitmentHash: commitmentHash,
-            depositAmount: depositAmount
+            bondAmount: bondAmt
         });
 
         // 8. Set status to PENDING
@@ -1116,7 +1136,7 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             batchId,
             msg.sender,
             commitmentHash,
-            depositAmount
+            bondAmt
         );
     }
 
@@ -1126,8 +1146,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         uint128 amount,
         uint128 limitPrice,
         bool isBuy,
-        bytes32 salt
-    ) external override nonReentrant whenRevealNotPaused {
+        bytes32 salt,
+        uint128 depositAmount
+    ) external payable override nonReentrant whenRevealNotPaused {
         PoolId poolId = key.toId();
 
         // 1. Get current batch and verify REVEAL phase
@@ -1154,11 +1175,20 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             revert Latch__CommitmentAlreadyRefunded();
         }
 
-        // 3. Get commitment and verify + create order (commitment hash verification)
+        // 3. Validate deposit
+        if (depositAmount == 0) {
+            revert Latch__ZeroDeposit();
+        }
+        if (minOrderSize > 0 && depositAmount < minOrderSize) {
+            revert Latch__DepositBelowMinimum(depositAmount, minOrderSize);
+        }
+        if (depositAmount < amount) {
+            revert Latch__InsufficientDeposit(amount, depositAmount);
+        }
+
+        // 4. Get commitment and verify + create order (commitment hash verification)
         Commitment storage commitment = _commitments[poolId][batchId][msg.sender];
 
-        // Fix #3.3: amount is now uint128 — no cast needed (matches OrderLib)
-        // We verify the commitment but only store minimal data on-chain
         OrderLib.verifyAndCreateOrder(
             commitment,
             amount,
@@ -1167,29 +1197,42 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             salt
         );
 
-        // 4. Store minimal reveal data (1 slot vs Order's 2 slots)
+        // 5. Transfer trade deposit — buyers deposit token1, sellers deposit token0
+        if (isBuy) {
+            _transferDepositIn(key.currency1, msg.sender, depositAmount);
+        } else {
+            _transferDepositIn(key.currency0, msg.sender, depositAmount);
+        }
+
+        // 6. Store reveal deposit
+        _revealDeposits[poolId][batchId][msg.sender] = RevealDeposit({
+            depositAmount: depositAmount,
+            isToken0: !isBuy // sellers deposit token0
+        });
+
+        // 7. Store minimal reveal data (1 slot vs Order's 2 slots)
         _revealedSlots[poolId][batchId].push(RevealSlot({trader: msg.sender, isBuy: isBuy}));
 
-        // 4b. Store leaf hash for ordersRoot validation at settlement
+        // 7b. Store leaf hash for ordersRoot validation at settlement
         _orderLeaves[poolId][batchId].push(
             OrderLib.encodeAsLeaf(
                 Order({amount: amount, limitPrice: limitPrice, trader: msg.sender, isBuy: isBuy})
             )
         );
 
-        // 5. Mark trader as having revealed
+        // 8. Mark trader as having revealed
         _hasRevealed[poolId][batchId][msg.sender] = true;
 
-        // 6. Update commitment status
+        // 9. Update commitment status
         _commitmentStatus[poolId][batchId][msg.sender] = CommitmentStatus.REVEALED;
 
-        // 7. Increment batch revealed count
+        // 10. Increment batch revealed count
         batch.incrementRevealedCount();
 
-        // 8. Emit privacy-preserving event (kept for backwards compatibility)
+        // 11. Emit privacy-preserving event (kept for backwards compatibility)
         emit OrderRevealed(poolId, batchId, msg.sender);
 
-        // 9. Emit full order data for off-chain solver consumption
+        // 12. Emit full order data for off-chain solver consumption
         emit OrderRevealedData(poolId, batchId, msg.sender, amount, limitPrice, isBuy, salt);
     }
 
@@ -1495,32 +1538,39 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @param batchId The batch identifier
     /// @param clearingPrice The clearing price (trusted from proof)
     /// @param publicInputs The 25-element public inputs containing fills at indices [9..24]
-    /// @return totalToken0Needed Total token0 required from solver for buy orders
+    /// @return netSolverToken0 Net token0 required from solver (buyFills - sellFills)
     function _executeSettlement(
         PoolId poolId,
         uint256 batchId,
         uint128 clearingPrice,
         bytes32[] calldata publicInputs
-    ) internal returns (uint256 totalToken0Needed) {
+    ) internal returns (uint256 netSolverToken0) {
         RevealSlot[] storage slots = _revealedSlots[poolId][batchId];
         uint256 len = slots.length;
         if (len == 0) return 0;
+
+        uint16 feeRate = uint16(uint256(publicInputs[7]));
+        uint256 totalToken0ForBuyers;
+        uint256 totalToken0FromSellers;
 
         for (uint256 i = 0; i < len; i++) {
             RevealSlot storage slot = slots[i];
             uint128 fill = uint128(uint256(publicInputs[9 + i]));
 
-            // Get deposit from commitment
-            uint128 depositAmount = _commitments[poolId][batchId][slot.trader].depositAmount;
+            // Get bond from commitment and trade deposit from reveal
+            uint128 bondAmount = _commitments[poolId][batchId][slot.trader].bondAmount;
+            uint128 depositAmount = _revealDeposits[poolId][batchId][slot.trader].depositAmount;
 
             // Calculate claimable amounts using fill from proof
             (uint128 amount0, uint128 amount1) = _calculateClaimableDelegated(
-                slot.isBuy, fill, clearingPrice, depositAmount
+                slot.isBuy, fill, clearingPrice, bondAmount, depositAmount, feeRate
             );
 
-            // Accumulate token0 needed for buy orders
+            // Track token0 flows for solver liquidity calculation
             if (slot.isBuy) {
-                totalToken0Needed += amount0;
+                totalToken0ForBuyers += fill;
+            } else {
+                totalToken0FromSellers += fill;
             }
 
             // Store claimable
@@ -1528,39 +1578,54 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             claimable.amount0 += amount0;
             claimable.amount1 += amount1;
         }
+
+        // Solver only provides the gap between buyer demand and seller supply
+        netSolverToken0 = totalToken0ForBuyers > totalToken0FromSellers
+            ? totalToken0ForBuyers - totalToken0FromSellers
+            : 0;
     }
 
-    /// @notice Calculate claimable amounts using proof-delegated fill
-    /// @dev Same logic as old _calculateClaimable but takes bool isBuy instead of full Order
+    /// @notice Calculate claimable amounts using proof-delegated fill (dual-token deposit model)
+    /// @dev Buyers deposited token1 at reveal; sellers deposited token0 at reveal; both paid bond in token1 at commit
+    /// @dev Protocol fee is deducted from buyer's token1 refund (proportional to fill)
     /// @param isBuy True for buy order, false for sell order
     /// @param fill The fill amount (trusted from proof)
     /// @param clearingPrice The uniform clearing price
-    /// @param depositAmount The original deposit amount
+    /// @param bondAmount The bond paid in token1 at commit time
+    /// @param depositAmount The trade deposit paid at reveal time (token1 for buyers, token0 for sellers)
+    /// @param feeRate The protocol fee rate in basis points
     /// @return amount0 Amount of token0 (base) claimable
     /// @return amount1 Amount of token1 (quote) claimable
     function _calculateClaimableDelegated(
         bool isBuy,
         uint128 fill,
         uint128 clearingPrice,
-        uint128 depositAmount
+        uint128 bondAmount,
+        uint128 depositAmount,
+        uint16 feeRate
     ) internal pure returns (uint128 amount0, uint128 amount1) {
         if (isBuy) {
-            // Buy order: deposited quote (token1), receive base (token0)
+            // Buy order: deposited token1 at reveal, receives token0 (base asset)
             amount0 = fill;
 
-            // Refund excess deposit (quote not used)
+            // token1 return = bond + deposit - payment - fee
+            // Protocol fee is prorated per buyer's fill: fee = fill * feeRate / FEE_DENOMINATOR
             uint256 payment = (uint256(fill) * clearingPrice) / Constants.PRICE_PRECISION;
-            if (depositAmount > payment) {
-                amount1 = uint128(depositAmount - payment);
+            uint256 fee = (uint256(fill) * feeRate) / Constants.FEE_DENOMINATOR;
+            uint256 totalToken1 = uint256(bondAmount) + uint256(depositAmount);
+            uint256 totalDeductions = payment + fee;
+            if (totalToken1 > totalDeductions) {
+                amount1 = uint128(totalToken1 - totalDeductions);
             }
         } else {
-            // Sell order: deposited base (token0 as collateral via token1 deposit), receive payment in quote (token1)
+            // Sell order: deposited token0 at reveal, receives token1 (payment)
             uint256 payment = (uint256(fill) * clearingPrice) / Constants.PRICE_PRECISION;
-            amount1 = uint128(payment);
+            // token1 return = payment revenue + bond refund
+            amount1 = uint128(payment + uint256(bondAmount));
 
-            // Refund unmatched deposit portion
+            // token0 return = unfilled portion of deposit
             if (depositAmount > fill) {
-                amount1 += uint128(depositAmount - fill);
+                amount0 = uint128(depositAmount - fill);
             }
         }
     }
@@ -1656,30 +1721,65 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
             revert Latch__WrongPhase(uint8(BatchPhase.SETTLE), uint8(phase));
         }
 
-        // 2. Check commitment status - must be PENDING (not revealed, not refunded)
+        // 2. Branch on commitment status
         CommitmentStatus status = _commitmentStatus[poolId][batchId][msg.sender];
         if (status == CommitmentStatus.NONE) {
             revert Latch__CommitmentNotFound();
-        }
-        if (status == CommitmentStatus.REVEALED) {
-            revert Latch__CommitmentAlreadyRevealed();
         }
         if (status == CommitmentStatus.REFUNDED) {
             revert Latch__CommitmentAlreadyRefunded();
         }
 
-        // 3. Get deposit amount from commitment (Fix #8: use uint128, no unsafe downcast)
         Commitment storage commitment = _commitments[poolId][batchId][msg.sender];
-        uint128 refundAmount = commitment.depositAmount;
+        uint128 bondRefund;
+        uint128 depositRefund;
 
-        // 4. Update status to REFUNDED
+        if (status == CommitmentStatus.PENDING) {
+            // Path A: Non-revealer refund — bond only (token1)
+            bondRefund = commitment.bondAmount;
+
+            // Zero storage before transfer (CEI)
+            commitment.bondAmount = 0;
+        } else {
+            // status == CommitmentStatus.REVEALED
+            // Path B: Reveal-timeout refund — only if batch NOT settled and past SETTLE phase
+            if (batch.settled) {
+                revert Latch__UseClaimTokens();
+            }
+            if (phase == BatchPhase.SETTLE) {
+                revert Latch__SettlePhaseActive();
+            }
+
+            // Cache amounts before zeroing (CEI)
+            bondRefund = commitment.bondAmount;
+            RevealDeposit storage reveal = _revealDeposits[poolId][batchId][msg.sender];
+            depositRefund = reveal.depositAmount;
+            bool isToken0 = reveal.isToken0;
+
+            // Zero storage BEFORE transfers
+            commitment.bondAmount = 0;
+            reveal.depositAmount = 0;
+
+            // Refund trade deposit in correct token
+            if (depositRefund > 0) {
+                if (isToken0) {
+                    _transferDepositOut(key.currency0, msg.sender, depositRefund);
+                } else {
+                    _transferDepositOut(key.currency1, msg.sender, depositRefund);
+                }
+            }
+        }
+
+        // 3. Update status to REFUNDED
         _commitmentStatus[poolId][batchId][msg.sender] = CommitmentStatus.REFUNDED;
 
-        // 5. Transfer refund to trader
-        _transferDepositOut(key.currency1, msg.sender, refundAmount);
+        // 4. Refund bond in token1 (common to both paths)
+        if (bondRefund > 0) {
+            _transferDepositOut(key.currency1, msg.sender, bondRefund);
+        }
 
-        // 6. Emit event
-        emit DepositRefunded(poolId, batchId, msg.sender, refundAmount);
+        // 5. Emit event
+        emit DepositRefunded(poolId, batchId, msg.sender, bondRefund, depositRefund);
     }
 
     /// @inheritdoc ILatchHook
@@ -1860,6 +1960,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     function markEmergencyRefunded(PoolId poolId, uint256 batchId, address trader) external override {
         if (msg.sender != address(emergencyModule)) revert Latch__OnlyEmergencyModule();
         _commitmentStatus[poolId][batchId][trader] = CommitmentStatus.REFUNDED;
+        // Zero out bond and deposit to prevent any re-use after emergency refund
+        _commitments[poolId][batchId][trader].bondAmount = 0;
+        _revealDeposits[poolId][batchId][trader].depositAmount = 0;
     }
 
     /// @notice Get the commitment status for a trader in a batch (Fix #2.2)
@@ -1880,14 +1983,43 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         return _hasRevealed[poolId][batchId][trader];
     }
 
-    /// @notice Get commitment deposit amount for a trader
+    /// @notice Get commitment bond amount for a trader
     /// @dev Called by EmergencyModule for refund calculations
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
     /// @param trader The trader address
-    /// @return The deposit amount
-    function getCommitmentDeposit(PoolId poolId, uint256 batchId, address trader) external view returns (uint128) {
-        return _commitments[poolId][batchId][trader].depositAmount;
+    /// @return The bond amount
+    function getCommitmentBond(PoolId poolId, uint256 batchId, address trader) external view returns (uint128) {
+        return _commitments[poolId][batchId][trader].bondAmount;
+    }
+
+    /// @notice Get a trader's reveal deposit for a batch
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param trader The trader's address
+    /// @return The RevealDeposit struct
+    function getRevealDeposit(PoolId poolId, uint256 batchId, address trader)
+        external
+        view
+        returns (RevealDeposit memory)
+    {
+        return _revealDeposits[poolId][batchId][trader];
+    }
+
+    /// @notice Get reveal deposit info for a trader (amount and which token)
+    /// @dev Used by EmergencyModule for dual-token emergency refunds
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param trader The trader address
+    /// @return depositAmount The trade deposit amount
+    /// @return isToken0 True if deposited token0 (seller), false if token1 (buyer)
+    function getRevealDepositInfo(PoolId poolId, uint256 batchId, address trader)
+        external
+        view
+        returns (uint128 depositAmount, bool isToken0)
+    {
+        RevealDeposit storage rd = _revealDeposits[poolId][batchId][trader];
+        return (rd.depositAmount, rd.isToken0);
     }
 
     // ============ Whitelist Snapshot View Function ============

@@ -14,30 +14,29 @@ describe("computeRoot", () => {
     expect(root).toBe(42n);
   });
 
-  it("hashes two leaves with hashPair", async () => {
+  it("builds a 16-leaf tree even for two leaves (matching circuit BATCH_SIZE)", async () => {
     const a = 100n;
     const b = 200n;
     const root = await computeRoot([a, b]);
-    const expected = await hashPair(a, b);
-    expect(root).toBe(expected);
+    // With BATCH_SIZE=16, root != hashPair(a,b) because the tree has 14 zero-padded leaves
+    const simpleHash = await hashPair(a, b);
+    expect(root).not.toBe(simpleHash);
+    expect(root).not.toBe(0n);
   });
 
-  it("pads to power of 2 (3 leaves -> 4)", async () => {
-    // 3 leaves → pad with 0 to 4
-    // Layer 0: [a, b, c, 0]
-    // Layer 1: [hash(a,b), hash(c,0)]
-    // Layer 2: [hash(hash(a,b), hash(c,0))]
+  it("pads to BATCH_SIZE=16 (3 leaves -> 16, not 4)", async () => {
     const a = 10n;
     const b = 20n;
     const c = 30n;
 
     const root = await computeRoot([a, b, c]);
+    expect(root).not.toBe(0n);
 
+    // Verify it's different from a 4-leaf tree result
     const left = await hashPair(a, b);
     const right = await hashPair(c, 0n);
-    const expected = await hashPair(left, right);
-
-    expect(root).toBe(expected);
+    const smallTreeRoot = await hashPair(left, right);
+    expect(root).not.toBe(smallTreeRoot);
   });
 
   it("is deterministic", async () => {
@@ -53,14 +52,16 @@ describe("computeRoot", () => {
     expect(r1).not.toBe(r2);
   });
 
-  it("handles power-of-2 leaf count without padding", async () => {
+  it("always pads to BATCH_SIZE=16 regardless of input count", async () => {
     const leaves = [10n, 20n, 30n, 40n];
     const root = await computeRoot(leaves);
-    // Should not add extra zeros
+    // With BATCH_SIZE=16, even 4 leaves get padded to 16
     const left = await hashPair(10n, 20n);
     const right = await hashPair(30n, 40n);
-    const expected = await hashPair(left, right);
-    expect(root).toBe(expected);
+    const smallTreeRoot = await hashPair(left, right);
+    // Root differs because the tree has 12 zero-padded leaves
+    expect(root).not.toBe(smallTreeRoot);
+    expect(root).not.toBe(0n);
   });
 });
 

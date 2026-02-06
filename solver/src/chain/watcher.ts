@@ -43,9 +43,16 @@ export class BatchWatcher {
   ): Promise<BatchState | null> {
     // Find the most recent BatchStarted event for our pool
     const startFilter = this.contract.filters.BatchStarted(this.poolId);
+    let scanFrom: number;
+    if (fromBlock === "latest") {
+      const currentBlockNum = await this.provider.getBlockNumber();
+      scanFrom = Math.max(0, currentBlockNum - 10000);
+    } else {
+      scanFrom = fromBlock;
+    }
     const startEvents = await this.contract.queryFilter(
       startFilter,
-      fromBlock === "latest" ? -10000 : fromBlock
+      scanFrom
     );
 
     if (startEvents.length === 0) {
@@ -64,9 +71,11 @@ export class BatchWatcher {
     const batchId = parsed.args[1] as bigint;
     const startBlock = parsed.args[2] as bigint;
     const commitEndBlock = parsed.args[3] as bigint;
-    const revealEndBlock = parsed.args[4] as bigint;
-    const settleEndBlock = parsed.args[5] as bigint;
-    const claimEndBlock = parsed.args[6] as bigint;
+    // Event only emits startBlock and commitEndBlock.
+    // Other boundaries are derived from pool config durations (not needed for settlement logic).
+    const revealEndBlock = 0n;
+    const settleEndBlock = 0n;
+    const claimEndBlock = 0n;
 
     // Check if batch is in SETTLE phase
     const currentBlock = await this.provider.getBlockNumber();

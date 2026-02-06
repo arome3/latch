@@ -27,6 +27,9 @@ import {HelperConfig} from "./HelperConfig.s.sol";
 contract DeployLocal is Script {
     /// @notice Anvil default accounts
     address constant ANVIL_0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+
+    /// @notice Foundry's deterministic CREATE2 deployer (used in broadcast mode)
+    address constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
     address constant ANVIL_1 = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
     address constant ANVIL_2 = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
     address constant ANVIL_3 = 0x90F79bf6EB2c4f870365E785982E1f101E93b906;
@@ -46,11 +49,17 @@ contract DeployLocal is Script {
         // 1. Deploy infrastructure
         // ═══════════════════════════════════════════════════════════
 
-        // Deploy PoolManager via deployCode to avoid pragma 0.8.26 conflict
-        address poolManagerAddr = deployCode(
-            "PoolManager.sol:PoolManager",
+        // Deploy PoolManager from artifact bytecode (compiled separately with solc 0.8.26)
+        // Read artifact JSON, extract bytecode, and deploy with CREATE
+        bytes memory pmBytecode = abi.encodePacked(
+            vm.getCode("out/PoolManager.sol/PoolManager.json"),
             abi.encode(ANVIL_0)
         );
+        address poolManagerAddr;
+        assembly ("memory-safe") {
+            poolManagerAddr := create(0, add(pmBytecode, 0x20), mload(pmBytecode))
+        }
+        require(poolManagerAddr != address(0), "DeployLocal: PoolManager deploy failed");
         IPoolManager poolManager = IPoolManager(poolManagerAddr);
         console2.log("PoolManager:", poolManagerAddr);
 
@@ -104,7 +113,7 @@ contract DeployLocal is Script {
         );
 
         (address hookAddress, bytes32 salt) = _findHookSalt(
-            ANVIL_0, flags, creationCode, constructorArgs
+            CREATE2_DEPLOYER, flags, creationCode, constructorArgs
         );
         console2.log("Mined hook address:", hookAddress);
 
@@ -240,7 +249,8 @@ contract DeployLocal is Script {
                 )
             );
 
-            if (uint160(hookAddress) & flags == flags) {
+            // Exact match: required flags set AND no extra flags (ALL_HOOK_MASK = 0x3FFF)
+            if ((uint160(hookAddress) & uint160(0x3FFF)) == flags) {
                 return (hookAddress, salt);
             }
         }

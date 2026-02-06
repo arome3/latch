@@ -138,11 +138,17 @@ contract FullLifecycle is Test {
         });
         poolId = poolKey.toId();
 
-        // Fund traders
+        // Fund traders with both tokens (dual-token deposit model)
+        token0.mint(trader1, 1000 ether);
+        token0.mint(trader2, 1000 ether);
         token1.mint(trader1, 1000 ether);
         token1.mint(trader2, 1000 ether);
         vm.prank(trader1);
+        token0.approve(address(hook), type(uint256).max);
+        vm.prank(trader1);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader2);
         token1.approve(address(hook), type(uint256).max);
         vm.deal(trader1, 100 ether);
@@ -153,6 +159,10 @@ contract FullLifecycle is Test {
         vm.prank(settler);
         token0.approve(address(hook), type(uint256).max);
         vm.deal(settler, 100 ether);
+
+        // Pre-fund hook with token1 to cover protocol fees during settlement
+        // (protocol fee is transferred from hook to SolverRewards, beyond trader deposits)
+        token1.mint(address(hook), 100_000 ether);
 
         // Fund anyone for gas
         vm.deal(anyone, 10 ether);
@@ -293,23 +303,26 @@ contract FullLifecycle is Test {
         assertGt(penaltyRecipient.balance, penaltyBalBefore, "Bond should be forfeited to penalty recipient");
         assertEq(emergencyModule.getBatchBond(poolId, batchId), 0, "Bond should be zeroed");
 
-        // Trader1 (revealed) claims emergency refund with 1% penalty
+        // Trader1 (revealed) claims emergency refund
+        // In dual-token model: bond=0 (commitBondAmount defaults to 0)
+        // Penalty applies to bond only (1% of 0 = 0), trade deposit refunded in full
+        // trader1 is a buyer who deposited 100e18 token1 at reveal
         uint256 t1BalBefore = token1.balanceOf(trader1);
         vm.prank(trader1);
         emergencyModule.claimEmergencyRefund(poolKey, batchId);
 
         uint256 t1BalAfter = token1.balanceOf(trader1);
-        uint256 expectedPenalty = (DEFAULT_DEPOSIT * emergencyModule.EMERGENCY_PENALTY_RATE()) / 10000;
-        uint256 expectedRefund = DEFAULT_DEPOSIT - expectedPenalty;
-        assertEq(t1BalAfter - t1BalBefore, expectedRefund, "Revealed trader gets deposit minus 1% penalty");
+        // Bond refund = 0 (no bond), trade deposit = 100e18 token1
+        assertEq(t1BalAfter - t1BalBefore, DEFAULT_DEPOSIT, "Revealed trader gets full trade deposit (bond=0, no penalty)");
 
-        // Trader2 (unrevealed) can also claim via emergency (no penalty)
+        // Trader2 (unrevealed) — only bond refund, which is 0
+        // No trade deposit was taken at commit time (deposits happen at reveal in dual-token model)
         uint256 t2BalBefore = token1.balanceOf(trader2);
         vm.prank(trader2);
         emergencyModule.claimEmergencyRefund(poolKey, batchId);
 
         uint256 t2BalAfter = token1.balanceOf(trader2);
-        assertEq(t2BalAfter - t2BalBefore, 50 ether, "Unrevealed trader gets full deposit refund");
+        assertEq(t2BalAfter - t2BalBefore, 0, "Unrevealed trader gets bond refund only (0 when bond=0)");
     }
 
     // ============ Test 3: Timelock Module Change ============
@@ -367,7 +380,7 @@ contract FullLifecycle is Test {
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
         vm.expectRevert(Latch__CommitPaused.selector);
-        hook.commitOrder(poolKey, hash, DEFAULT_DEPOSIT, proof);
+        hook.commitOrder(poolKey, hash, proof);
 
         // Unpause commit and proceed
         hook.setCommitPaused(false);
@@ -504,11 +517,12 @@ contract FullLifecycle is Test {
         vm.roll(block.number + REVEAL_DURATION + 1); // to SETTLE
 
         // trader2 claims refund for unrevealed order (refundDeposit in SETTLE phase)
+        // In dual-token model: non-revealers only get bond refund (token1), which is 0 when bond=0
         uint256 t2BalBefore = token1.balanceOf(trader2);
         vm.prank(trader2);
         hook.refundDeposit(poolKey, batchId);
         uint256 t2BalAfter = token1.balanceOf(trader2);
-        assertEq(t2BalAfter - t2BalBefore, 50 ether, "Trader2 should get full refund");
+        assertEq(t2BalAfter - t2BalBefore, 0, "Trader2 gets bond refund only (0 when bond=0)");
 
         // Verify trader2 status is REFUNDED
         uint8 status2 = hook.getCommitmentStatus(poolId, batchId, trader2);
@@ -593,7 +607,7 @@ contract FullLifecycle is Test {
         bytes32 hash = _computeCommitmentHash(trader, amount, limitPrice, isBuy, salt);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader);
-        hook.commitOrder(poolKey, hash, amount, proof);
+        hook.commitOrder(poolKey, hash, proof);
     }
 
     function _revealOrder(
@@ -604,7 +618,7 @@ contract FullLifecycle is Test {
         bytes32 salt
     ) internal {
         vm.prank(trader);
-        hook.revealOrder(poolKey, amount, limitPrice, isBuy, salt);
+        hook.revealOrder(poolKey, amount, limitPrice, isBuy, salt, amount);
     }
 
     function _buildPublicInputsWithFills(

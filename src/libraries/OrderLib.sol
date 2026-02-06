@@ -7,8 +7,7 @@ import {PoseidonT6} from "poseidon-solidity/PoseidonT6.sol";
 import {
     Latch__CommitmentHashMismatch,
     Latch__ZeroOrderAmount,
-    Latch__ZeroOrderPrice,
-    Latch__AmountExceedsDeposit
+    Latch__ZeroOrderPrice
 } from "../types/Errors.sol";
 
 /// @title OrderLib
@@ -37,6 +36,7 @@ library OrderLib {
     /// @notice Verify a commitment reveal and create an Order
     /// @dev Validates hash match and order parameters
     /// @dev NOTE: Salt is verified here but NOT stored in the returned Order (saves 32 bytes/order)
+    /// @dev NOTE: amount vs deposit check removed — deposits happen at reveal time now, validated by caller
     /// @param commitment The stored commitment
     /// @param amount Revealed order amount
     /// @param limitPrice Revealed order limit price
@@ -53,9 +53,6 @@ library OrderLib {
         // Validate order parameters
         if (amount == 0) revert Latch__ZeroOrderAmount();
         if (limitPrice == 0) revert Latch__ZeroOrderPrice();
-        if (amount > commitment.depositAmount) {
-            revert Latch__AmountExceedsDeposit(amount, commitment.depositAmount);
-        }
 
         // Verify commitment hash
         bytes32 computedHash = computeCommitmentHash(commitment.trader, amount, limitPrice, isBuy, salt);

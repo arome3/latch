@@ -86,14 +86,23 @@ struct PoolConfigPacked {
 /// @dev Storage: 3 slots
 ///      Slot 0: trader(20) = 20 bytes
 ///      Slot 1: commitmentHash(32) = 32 bytes
-///      Slot 2: depositAmount(16) = 16 bytes
+///      Slot 2: bondAmount(16) = 16 bytes
 struct Commitment {
     // Slot 0: 20 bytes (address cannot pack with bytes32)
     address trader;
     // Slot 1: 32 bytes (bytes32 always takes full slot)
     bytes32 commitmentHash; // keccak256(DOMAIN, trader, amount, price, isBuy, salt)
     // Slot 2: 16 bytes used (16 bytes padding)
-    uint128 depositAmount; // 16 bytes - tokens deposited as collateral
+    uint128 bondAmount; // 16 bytes - small bond in token1 to prevent griefing
+}
+
+/// @notice Deposit made at reveal time when isBuy is known
+/// @dev Stored separately from Commitment because it's created at reveal, not commit
+/// @dev Storage: 1 slot (17 bytes used, 15 bytes padding)
+///      Slot 0: depositAmount(16) + isToken0(1) = 17 bytes
+struct RevealDeposit {
+    uint128 depositAmount; // 16 bytes - actual trade deposit amount
+    bool isToken0;         // 1 byte - true if deposited token0 (seller)
 }
 
 /// @notice A revealed order ready for matching

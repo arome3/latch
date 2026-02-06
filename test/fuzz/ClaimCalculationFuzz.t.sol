@@ -20,23 +20,31 @@ contract ClaimCalculationFuzz is LatchTestBase {
     // ============ Internal: replicate _calculateClaimableDelegated in Solidity ============
 
     /// @notice Pure replica of LatchHook._calculateClaimableDelegated for isolated fuzz testing
+    /// @dev In the dual-token model, bondAmount is the bond paid at commit, depositAmount is the
+    ///      trade deposit paid at reveal. For buyers: deposit is token1, refund = deposit - payment - fee.
+    ///      For sellers: deposit is token0, refund of unfilled deposit + payment in token1.
     function _calcClaim(
         bool isBuy,
         uint128 fill,
         uint128 clearingPrice,
-        uint128 depositAmount
+        uint128 bondAmount,
+        uint128 depositAmount,
+        uint16 feeRate
     ) internal pure returns (uint128 amount0, uint128 amount1) {
         if (isBuy) {
             amount0 = fill;
             uint256 payment = (uint256(fill) * clearingPrice) / PRICE_PRECISION;
-            if (depositAmount > payment) {
-                amount1 = uint128(depositAmount - payment);
+            uint256 fee = (uint256(fill) * feeRate) / FEE_DENOM;
+            uint256 totalToken1 = uint256(bondAmount) + uint256(depositAmount);
+            uint256 totalDeductions = payment + fee;
+            if (totalToken1 > totalDeductions) {
+                amount1 = uint128(totalToken1 - totalDeductions);
             }
         } else {
             uint256 payment = (uint256(fill) * clearingPrice) / PRICE_PRECISION;
-            amount1 = uint128(payment);
+            amount1 = uint128(payment + uint256(bondAmount));
             if (depositAmount > fill) {
-                amount1 += uint128(depositAmount - fill);
+                amount0 = uint128(depositAmount - fill);
             }
         }
     }
@@ -61,12 +69,12 @@ contract ClaimCalculationFuzz is LatchTestBase {
 
         // The ZK circuit ensures fill is bounded so payment <= deposit
         // But we test the Solidity math: if payment > deposit, amount1 = 0 (no refund), no revert
-        (uint128 amount0, uint128 amount1) = _calcClaim(true, fill, clearingPrice, depositAmount);
+        (uint128 amount0, uint128 amount1) = _calcClaim(true, fill, clearingPrice, 0, depositAmount, 0);
 
         // amount0 is always the fill (buyer receives base tokens)
         assertEq(amount0, fill, "Buy amount0 must equal fill");
 
-        // If payment <= deposit, refund = deposit - payment
+        // If payment <= deposit, refund = deposit - payment (no fee in this test)
         if (payment <= depositAmount) {
             assertEq(amount1, uint128(depositAmount - payment), "Buy refund should be deposit minus payment");
         } else {
@@ -90,16 +98,16 @@ contract ClaimCalculationFuzz is LatchTestBase {
         // For sell orders, fill represents the amount of base token sold
         // deposit is in quote token (token1) as collateral
 
-        (uint128 amount0, uint128 amount1) = _calcClaim(false, fill, clearingPrice, depositAmount);
+        (uint128 amount0, uint128 amount1) = _calcClaim(false, fill, clearingPrice, 0, depositAmount, 0);
 
-        // Sellers never receive token0 in this model
-        assertEq(amount0, 0, "Sell amount0 must be 0");
-
-        // amount1 = payment + unfilled refund
-        uint256 payment = (uint256(fill) * clearingPrice) / PRICE_PRECISION;
+        // Sellers receive unfilled token0 back
         uint256 unfilled = depositAmount > fill ? depositAmount - fill : 0;
+        assertEq(uint256(amount0), unfilled, "Sell amount0 = unfilled token0 refund");
 
-        assertEq(uint256(amount1), payment + unfilled, "Sell amount1 = payment + unfilled");
+        // amount1 = payment in token1 (no bond in this test)
+        uint256 payment = (uint256(fill) * clearingPrice) / PRICE_PRECISION;
+
+        assertEq(uint256(amount1), payment, "Sell amount1 = payment");
     }
 
     // ============ Fuzz Test: Protocol fee is bounded ============
@@ -141,17 +149,18 @@ contract ClaimCalculationFuzz is LatchTestBase {
         vm.assume(buyDeposit >= buyFill && buyDeposit <= 1e24);
         vm.assume(sellDeposit >= sellFill && sellDeposit <= 1e24);
 
-        // Calculate buyer claimable
-        (uint128 buyAmount0, uint128 buyAmount1) = _calcClaim(true, buyFill, clearingPrice, buyDeposit);
+        // Calculate buyer claimable (no fee in this isolated test)
+        (uint128 buyAmount0, uint128 buyAmount1) = _calcClaim(true, buyFill, clearingPrice, 0, buyDeposit, 0);
 
         // Calculate seller claimable
-        (uint128 sellAmount0, uint128 sellAmount1) = _calcClaim(false, sellFill, clearingPrice, sellDeposit);
+        (uint128 sellAmount0, uint128 sellAmount1) = _calcClaim(false, sellFill, clearingPrice, 0, sellDeposit, 0);
 
         // Buyer receives exactly the fill in token0
         assertEq(buyAmount0, buyFill, "Buyer token0 == buy fill");
 
-        // Seller receives 0 token0
-        assertEq(sellAmount0, 0, "Seller token0 == 0");
+        // Seller receives unfilled token0 back
+        uint256 sellUnfilled = sellDeposit > sellFill ? sellDeposit - sellFill : 0;
+        assertEq(uint256(sellAmount0), sellUnfilled, "Seller token0 == unfilled refund");
 
         // Buyer's payment in quote
         uint256 buyPayment = (uint256(buyFill) * clearingPrice) / PRICE_PRECISION;
@@ -161,10 +170,9 @@ contract ClaimCalculationFuzz is LatchTestBase {
             assertEq(buyAmount1, uint128(buyDeposit - buyPayment), "Buyer refund correct");
         }
 
-        // Seller payment + unfilled refund
+        // Seller payment in token1
         uint256 sellPayment = (uint256(sellFill) * clearingPrice) / PRICE_PRECISION;
-        uint256 sellUnfilled = sellDeposit > sellFill ? sellDeposit - sellFill : 0;
-        assertEq(uint256(sellAmount1), sellPayment + sellUnfilled, "Seller amount1 correct");
+        assertEq(uint256(sellAmount1), sellPayment, "Seller amount1 correct");
     }
 
     // ============ Fuzz Test: Extreme prices don't cause overflow or revert ============
@@ -180,7 +188,7 @@ contract ClaimCalculationFuzz is LatchTestBase {
 
         // Test with minimum price (1 wei)
         {
-            (uint128 a0, uint128 a1) = _calcClaim(isBuy, fill, 1, depositAmount);
+            (uint128 a0, uint128 a1) = _calcClaim(isBuy, fill, 1, 0, depositAmount, 0);
             // Should not revert; amounts should be finite
             assertTrue(a0 <= type(uint128).max, "Extreme low price: a0 in range");
             assertTrue(a1 <= type(uint128).max, "Extreme low price: a1 in range");
@@ -188,7 +196,7 @@ contract ClaimCalculationFuzz is LatchTestBase {
 
         // Test with 1:1 price (1e18)
         {
-            (uint128 a0, uint128 a1) = _calcClaim(isBuy, fill, 1e18, depositAmount);
+            (uint128 a0, uint128 a1) = _calcClaim(isBuy, fill, 1e18, 0, depositAmount, 0);
             assertTrue(a0 <= type(uint128).max, "1:1 price: a0 in range");
             assertTrue(a1 <= type(uint128).max, "1:1 price: a1 in range");
         }
@@ -198,7 +206,7 @@ contract ClaimCalculationFuzz is LatchTestBase {
         {
             uint128 highPrice = type(uint128).max / (fill > 0 ? fill : 1);
             if (highPrice > 0) {
-                (uint128 a0, uint128 a1) = _calcClaim(isBuy, fill, highPrice, depositAmount);
+                (uint128 a0, uint128 a1) = _calcClaim(isBuy, fill, highPrice, 0, depositAmount, 0);
                 assertTrue(a0 <= type(uint128).max, "High price: a0 in range");
                 assertTrue(a1 <= type(uint128).max, "High price: a1 in range");
             }
@@ -269,11 +277,13 @@ contract ClaimCalculationFuzz is LatchTestBase {
         // Seller gets 0 token0
         assertEq(c2.amount0, 0, "Seller token0 == 0");
 
-        // Both should have non-zero token1 amounts (refund for buyer, payment+refund for seller)
-        // Payment = fill * clearingPrice / 1e18
+        // Buyer token1 refund = deposit - payment - fee
+        // Payment = fill * clearingPrice / 1e18, Fee = fill * feeRate / 10000
         uint256 payment = (uint256(matchedVolume) * clearingPrice) / PRICE_PRECISION;
-        if (payment <= DEFAULT_DEPOSIT) {
-            assertEq(c1.amount1, uint128(DEFAULT_DEPOSIT - payment), "Buyer refund correct");
+        uint256 fee = (uint256(matchedVolume) * FEE_RATE) / FEE_DENOM;
+        uint256 totalDeductions = payment + fee;
+        if (totalDeductions <= DEFAULT_DEPOSIT) {
+            assertEq(c1.amount1, uint128(DEFAULT_DEPOSIT - totalDeductions), "Buyer refund correct");
         }
     }
 }

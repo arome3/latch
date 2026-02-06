@@ -77,6 +77,11 @@ contract TestLatchHook is LatchHook {
 
     function validateHookAddress(BaseHook) internal pure override {}
 
+    /// @dev Test helper: set _currentBatchId so next startBatch produces desired batchId
+    function setCurrentBatchId(PoolId poolId, uint256 id) external {
+        _currentBatchId[poolId] = id;
+    }
+
     receive() external payable {}
 }
 
@@ -87,9 +92,9 @@ contract TestLatchHook is LatchHook {
 ///      and verifies that the full pipeline works: commit → reveal → settle with ZK proof.
 ///
 ///      Prover.toml values used to generate the proof:
-///      - Buyer:  0x1111...1111, amount=100, limitPrice=1000, isBuy=true
-///      - Seller: 0x2222...2222, amount=100, limitPrice=900,  isBuy=false
-///      - clearingPrice=900, fills=[100, 100, 0...], feeRate=30, protocolFee=0
+///      - Buyer:  Anvil #1 (0x7099..79C8), amount=100e18, limitPrice=1e18, isBuy=true
+///      - Seller: Anvil #2 (0x3C44..93BC), amount=100e18, limitPrice=0.9e18, isBuy=false
+///      - batchId=9, clearingPrice=0.9e18, fills=[100e18, 100e18, 0...], feeRate=30, protocolFee=0.3e18
 contract E2EProofVerificationTest is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -100,10 +105,18 @@ contract E2EProofVerificationTest is Test {
     PoolKey public poolKey;
     PoolId public poolId;
 
-    // Trader addresses matching Prover.toml
-    address constant BUYER = 0x1111111111111111111111111111111111111111;
-    address constant SELLER = 0x2222222222222222222222222222222222222222;
+    // Trader addresses matching Prover.toml (Anvil #1 and #2)
+    address constant BUYER = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+    address constant SELLER = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
     address constant SOLVER = address(0x3001);
+
+    // Proof values matching Prover.toml (batchId=1, large amounts)
+    uint256 constant PROOF_BATCH_ID = 1;
+    uint128 constant BUYER_AMOUNT = 100e18;
+    uint128 constant SELLER_AMOUNT = 100e18;
+    uint128 constant BUYER_LIMIT = 1e18;    // 1.0 token1/token0
+    uint128 constant SELLER_LIMIT = 0.9e18; // 0.9 token1/token0
+    uint128 constant CLEARING_PRICE = 0.9e18;
 
     // Phase durations
     uint32 constant COMMIT_DURATION = 100;
@@ -155,17 +168,24 @@ contract E2EProofVerificationTest is Test {
         // Disable batch start bond
         hook.setBatchStartBond(0);
 
-        // Fund traders with token1 (quote currency for deposits)
-        token1.mint(BUYER, 10_000);
-        token1.mint(SELLER, 10_000);
+        // Fund traders with both tokens (dual-token deposit model)
+        // Buyer deposits token1, seller deposits token0
+        token0.mint(BUYER, 1_000e18);
+        token0.mint(SELLER, 1_000e18);
+        token1.mint(BUYER, 1_000e18);
+        token1.mint(SELLER, 1_000e18);
 
+        vm.prank(BUYER);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(BUYER);
         token1.approve(address(hook), type(uint256).max);
         vm.prank(SELLER);
+        token0.approve(address(hook), type(uint256).max);
+        vm.prank(SELLER);
         token1.approve(address(hook), type(uint256).max);
 
-        // Fund solver with token0 (provides liquidity for buy order fills)
-        token0.mint(SOLVER, 10_000);
+        // Fund solver with token0 (provides net buy-side liquidity)
+        token0.mint(SOLVER, 1_000e18);
         vm.prank(SOLVER);
         token0.approve(address(hook), type(uint256).max);
     }
@@ -218,30 +238,34 @@ contract E2EProofVerificationTest is Test {
         });
         hook.configurePool(poolKey, config);
 
-        // Start batch (batchId becomes 1)
+        // Set batch counter so next startBatch produces batchId matching proof's PI[0]
+        hook.setCurrentBatchId(poolId, PROOF_BATCH_ID - 1);
+
+        // Start batch (batchId becomes PROOF_BATCH_ID)
         hook.startBatch(poolKey);
+        assertEq(hook.getCurrentBatchId(poolId), PROOF_BATCH_ID, "batchId should match proof");
 
         // === COMMIT PHASE ===
-        // Buyer: amount=100, limitPrice=1000, isBuy=true
-        bytes32 buyerHash = _commitmentHash(BUYER, 100, 1000, true, BUYER_SALT);
+        // Buyer: amount=100e18, limitPrice=1e18, isBuy=true
+        bytes32 buyerHash = _commitmentHash(BUYER, BUYER_AMOUNT, BUYER_LIMIT, true, BUYER_SALT);
         vm.prank(BUYER);
-        hook.commitOrder(poolKey, buyerHash, 100, new bytes32[](0));
+        hook.commitOrder(poolKey, buyerHash, new bytes32[](0));
 
-        // Seller: amount=100, limitPrice=900, isBuy=false
-        bytes32 sellerHash = _commitmentHash(SELLER, 100, 900, false, SELLER_SALT);
+        // Seller: amount=100e18, limitPrice=0.9e18, isBuy=false
+        bytes32 sellerHash = _commitmentHash(SELLER, SELLER_AMOUNT, SELLER_LIMIT, false, SELLER_SALT);
         vm.prank(SELLER);
-        hook.commitOrder(poolKey, sellerHash, 100, new bytes32[](0));
+        hook.commitOrder(poolKey, sellerHash, new bytes32[](0));
 
         // === REVEAL PHASE (batch uses block.number, not timestamp) ===
         vm.roll(block.number + COMMIT_DURATION + 1);
 
         // Buyer reveals first (must match revealedSlots[0] = buyer, matching fills[0])
         vm.prank(BUYER);
-        hook.revealOrder(poolKey, 100, 1000, true, BUYER_SALT);
+        hook.revealOrder(poolKey, BUYER_AMOUNT, BUYER_LIMIT, true, BUYER_SALT, BUYER_AMOUNT);
 
         // Seller reveals second (revealedSlots[1] = seller, matching fills[1])
         vm.prank(SELLER);
-        hook.revealOrder(poolKey, 100, 900, false, SELLER_SALT);
+        hook.revealOrder(poolKey, SELLER_AMOUNT, SELLER_LIMIT, false, SELLER_SALT, SELLER_AMOUNT);
 
         // === Advance to SETTLE PHASE ===
         vm.roll(block.number + REVEAL_DURATION + 1);
@@ -257,25 +281,24 @@ contract E2EProofVerificationTest is Test {
         bytes32[] memory publicInputs = _loadPublicInputs();
 
         // Sanity: verify public inputs match expected values from Prover.toml
-        assertEq(uint256(publicInputs[0]), 1, "PI[0] batchId");
-        assertEq(uint256(publicInputs[1]), 900, "PI[1] clearingPrice");
-        assertEq(uint256(publicInputs[2]), 100, "PI[2] buyVolume");
-        assertEq(uint256(publicInputs[3]), 100, "PI[3] sellVolume");
+        assertEq(uint256(publicInputs[0]), PROOF_BATCH_ID, "PI[0] batchId");
+        assertEq(uint256(publicInputs[1]), uint256(CLEARING_PRICE), "PI[1] clearingPrice");
+        assertEq(uint256(publicInputs[2]), uint256(BUYER_AMOUNT), "PI[2] buyVolume");
+        assertEq(uint256(publicInputs[3]), uint256(SELLER_AMOUNT), "PI[3] sellVolume");
         assertEq(uint256(publicInputs[4]), 2, "PI[4] orderCount");
         assertEq(uint256(publicInputs[7]), 30, "PI[7] feeRate");
-        assertEq(uint256(publicInputs[8]), 0, "PI[8] protocolFee");
-        assertEq(uint256(publicInputs[9]), 100, "PI[9] fills[0]");
-        assertEq(uint256(publicInputs[10]), 100, "PI[10] fills[1]");
+        assertEq(uint256(publicInputs[9]), uint256(BUYER_AMOUNT), "PI[9] fills[0]");
+        assertEq(uint256(publicInputs[10]), uint256(SELLER_AMOUNT), "PI[10] fills[1]");
 
         // Settle with real proof — this calls HonkVerifier.verify() on-chain
         vm.prank(SOLVER);
         hook.settleBatch(poolKey, proof, publicInputs);
 
         // Verify batch transitioned to settled state
-        SettledBatchData memory settled = hook.getSettledBatch(poolId, 1);
-        assertEq(settled.clearingPrice, 900, "settled clearingPrice");
-        assertEq(settled.totalBuyVolume, 100, "settled buyVolume");
-        assertEq(settled.totalSellVolume, 100, "settled sellVolume");
+        SettledBatchData memory settled = hook.getSettledBatch(poolId, PROOF_BATCH_ID);
+        assertEq(settled.clearingPrice, uint256(CLEARING_PRICE), "settled clearingPrice");
+        assertEq(settled.totalBuyVolume, uint256(BUYER_AMOUNT), "settled buyVolume");
+        assertEq(settled.totalSellVolume, uint256(SELLER_AMOUNT), "settled sellVolume");
     }
 
     /// @notice Verify claimable amounts are correct after real proof settlement
@@ -288,17 +311,20 @@ contract E2EProofVerificationTest is Test {
         vm.prank(SOLVER);
         hook.settleBatch(poolKey, proof, publicInputs);
 
-        // Buyer: fill=100 of token0, payment = (100 * 900) / 1e18 = 0 (small values)
-        // So buyer gets: amount0=100 (fill), amount1=100 (full deposit refund since payment rounds to 0)
-        (Claimable memory buyerClaim,) = hook.getClaimable(poolId, 1, BUYER);
-        assertEq(buyerClaim.amount0, 100, "buyer should receive 100 token0 (fill)");
-        assertEq(buyerClaim.amount1, 100, "buyer should get full deposit refund (payment rounds to 0)");
+        // Buyer: deposited 100e18 token1, fill=100e18 token0
+        // payment = (100e18 * 0.9e18) / 1e18 = 90e18
+        // fee = (100e18 * 30) / 10000 = 0.3e18
+        // amount0 = fill = 100e18, amount1 = bond(0) + deposit(100e18) - payment(90e18) - fee(0.3e18) = 9.7e18
+        (Claimable memory buyerClaim,) = hook.getClaimable(poolId, PROOF_BATCH_ID, BUYER);
+        assertEq(buyerClaim.amount0, 100e18, "buyer should receive 100e18 token0 (fill)");
+        assertEq(buyerClaim.amount1, 9.7e18, "buyer should get 9.7e18 token1 refund (deposit - payment - fee)");
 
-        // Seller: fill=100, payment = (100 * 900) / 1e18 = 0 (small values)
-        // So seller gets: amount0=0, amount1 = 0 + (100 - 100) = 0
-        (Claimable memory sellerClaim,) = hook.getClaimable(poolId, 1, SELLER);
-        assertEq(sellerClaim.amount0, 0, "seller should receive 0 token0");
-        assertEq(sellerClaim.amount1, 0, "seller payment and refund both 0 with small values");
+        // Seller: deposited 100e18 token0, fill=100e18
+        // payment = (100e18 * 0.9e18) / 1e18 = 90e18
+        // amount0 = deposit(100e18) - fill(100e18) = 0, amount1 = payment(90e18) + bond(0) = 90e18
+        (Claimable memory sellerClaim,) = hook.getClaimable(poolId, PROOF_BATCH_ID, SELLER);
+        assertEq(sellerClaim.amount0, 0, "seller fully filled, no token0 refund");
+        assertEq(sellerClaim.amount1, 90e18, "seller receives 90e18 token1 payment");
     }
 
     /// @notice Verify proof bytes are correct length
@@ -372,11 +398,11 @@ contract E2EProofVerificationTest is Test {
         bytes memory proof = _loadProof();
         bytes32[] memory publicInputs = _loadPublicInputs();
 
-        // Tamper: change batchId from 1 to 2
-        publicInputs[0] = bytes32(uint256(2));
+        // Tamper: change batchId from PROOF_BATCH_ID to PROOF_BATCH_ID+1
+        publicInputs[0] = bytes32(PROOF_BATCH_ID + 1);
 
         vm.prank(SOLVER);
-        vm.expectRevert(abi.encodeWithSelector(Latch__PIBatchIdMismatch.selector, 1, 2));
+        vm.expectRevert(abi.encodeWithSelector(Latch__PIBatchIdMismatch.selector, PROOF_BATCH_ID, PROOF_BATCH_ID + 1));
         hook.settleBatch(poolKey, proof, publicInputs);
     }
 
@@ -442,7 +468,7 @@ contract E2EProofVerificationTest is Test {
         hook.settleBatch(poolKey, proof, publicInputs);
 
         // Should have settled successfully
-        SettledBatchData memory settled = hook.getSettledBatch(poolId, 1);
-        assertEq(settled.clearingPrice, 900, "should settle after re-enable");
+        SettledBatchData memory settled = hook.getSettledBatch(poolId, PROOF_BATCH_ID);
+        assertEq(settled.clearingPrice, uint256(CLEARING_PRICE), "should settle after re-enable");
     }
 }

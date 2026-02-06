@@ -9,8 +9,7 @@ import {Constants} from "../../src/types/Constants.sol";
 import {
     Latch__CommitmentHashMismatch,
     Latch__ZeroOrderAmount,
-    Latch__ZeroOrderPrice,
-    Latch__AmountExceedsDeposit
+    Latch__ZeroOrderPrice
 } from "../../src/types/Errors.sol";
 
 /// @title OrderLibWrapper
@@ -19,10 +18,10 @@ import {
 contract OrderLibWrapper {
     Commitment public commitment;
 
-    function setCommitment(address trader, bytes32 commitmentHash, uint128 depositAmount) external {
+    function setCommitment(address trader, bytes32 commitmentHash, uint128 bondAmount) external {
         commitment.trader = trader;
         commitment.commitmentHash = commitmentHash;
-        commitment.depositAmount = depositAmount;
+        commitment.bondAmount = bondAmount;
     }
 
     function verifyAndCreateOrder(uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt)
@@ -119,14 +118,8 @@ contract OrderLibTest is Test {
         wrapper.verifyAndCreateOrder(AMOUNT, 0, IS_BUY, SALT);
     }
 
-    function test_verifyAndCreateOrder_revertsOnAmountExceedsDeposit() public {
-        uint128 depositAmount = 50 ether; // Less than AMOUNT
-        bytes32 commitmentHash = OrderLib.computeCommitmentHash(TRADER, AMOUNT, PRICE, IS_BUY, SALT);
-        wrapper.setCommitment(TRADER, commitmentHash, depositAmount);
-
-        vm.expectRevert(abi.encodeWithSelector(Latch__AmountExceedsDeposit.selector, AMOUNT, depositAmount));
-        wrapper.verifyAndCreateOrder(AMOUNT, PRICE, IS_BUY, SALT);
-    }
+    // NOTE: test_verifyAndCreateOrder_revertsOnAmountExceedsDeposit removed.
+    // Amount vs deposit check was moved from OrderLib to LatchHook.revealOrder() (dual-token deposit model).
 
     function test_verifyAndCreateOrder_revertsOnHashMismatch() public {
         bytes32 correctHash = OrderLib.computeCommitmentHash(TRADER, AMOUNT, PRICE, IS_BUY, SALT);
@@ -284,9 +277,9 @@ contract OrderLibTest is Test {
 
     // ============ Helper Functions ============
 
-    function _setupCommitment(address trader, bytes32 commitmentHash, uint128 depositAmount) internal {
+    function _setupCommitment(address trader, bytes32 commitmentHash, uint128 bondAmount) internal {
         testCommitment.trader = trader;
         testCommitment.commitmentHash = commitmentHash;
-        testCommitment.depositAmount = depositAmount;
+        testCommitment.bondAmount = bondAmount;
     }
 }

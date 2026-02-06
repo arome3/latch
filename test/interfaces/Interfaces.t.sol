@@ -17,7 +17,9 @@ import {
     CommitmentStatus,
     ClaimStatus,
     PoolConfig,
+    PoolMode,
     Commitment,
+    RevealDeposit,
     Batch,
     Claimable,
     Order,
@@ -220,16 +222,16 @@ contract MockLatchHook is ILatchHook {
         emit BatchStarted(poolId, batchId, uint64(block.number), uint64(block.number + 10));
     }
 
-    function commitOrder(PoolKey calldata key, bytes32 commitmentHash, uint128 depositAmount, bytes32[] calldata)
+    function commitOrder(PoolKey calldata key, bytes32 commitmentHash, bytes32[] calldata)
         external
         payable
         override
     {
         PoolId poolId = PoolIdLibrary.toId(key);
-        emit OrderCommitted(poolId, currentBatchIds[poolId], msg.sender, commitmentHash, depositAmount);
+        emit OrderCommitted(poolId, currentBatchIds[poolId], msg.sender, commitmentHash, 0);
     }
 
-    function revealOrder(PoolKey calldata key, uint128, uint128, bool, bytes32) external override {
+    function revealOrder(PoolKey calldata key, uint128, uint128, bool, bytes32, uint128) external payable override {
         PoolId poolId = PoolIdLibrary.toId(key);
         emit OrderRevealed(poolId, currentBatchIds[poolId], msg.sender);
     }
@@ -246,7 +248,7 @@ contract MockLatchHook is ILatchHook {
 
     function refundDeposit(PoolKey calldata key, uint256 batchId) external override {
         PoolId poolId = PoolIdLibrary.toId(key);
-        emit DepositRefunded(poolId, batchId, msg.sender, uint128(100));
+        emit DepositRefunded(poolId, batchId, msg.sender, uint128(100), uint128(0));
     }
 
     function finalizeBatch(PoolKey calldata key, uint256 batchId) external override {
@@ -302,7 +304,7 @@ contract MockLatchHook is ILatchHook {
             Commitment({
                 trader: address(0),
                 commitmentHash: bytes32(0),
-                depositAmount: 0
+                bondAmount: 0
             }),
             CommitmentStatus.NONE
         );
@@ -371,8 +373,12 @@ contract MockLatchHook is ILatchHook {
         return false;
     }
 
-    function getCommitmentDeposit(PoolId, uint256, address) external pure override returns (uint128) {
+    function getCommitmentBond(PoolId, uint256, address) external pure override returns (uint128) {
         return 0;
+    }
+
+    function getRevealDepositInfo(PoolId, uint256, address) external pure override returns (uint128, bool) {
+        return (0, false);
     }
 
     function getBatchWhitelistRoot(PoolId, uint256) external pure override returns (bytes32) {
@@ -403,6 +409,14 @@ contract MockLatchHook is ILatchHook {
 
     function setSolverRegistryViaTimelock(address) external override {
         // No-op for mock
+    }
+
+    function setCommitBondAmount(uint128) external override {
+        // No-op for mock
+    }
+
+    function getRevealDeposit(PoolId, uint256, address) external pure override returns (RevealDeposit memory) {
+        return RevealDeposit({depositAmount: 0, isToken0: false});
     }
 }
 

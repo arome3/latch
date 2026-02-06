@@ -191,18 +191,26 @@ contract SettlementPhaseTest is Test {
         });
         poolId = poolKey.toId();
 
-        // Fund traders
+        // Fund traders with token1 (for bonds and buyer deposits)
         token1.mint(trader1, 1000 ether);
         token1.mint(trader2, 1000 ether);
         token1.mint(trader3, 1000 ether);
 
-        // Approve hook for deposits
+        // Fund sellers with token0 (for seller deposits in dual-token model)
+        token0.mint(trader2, 1000 ether);
+        token0.mint(trader3, 1000 ether);
+
+        // Approve hook for deposits (token1 for all, token0 for sellers)
         vm.prank(trader1);
         token1.approve(address(hook), type(uint256).max);
         vm.prank(trader2);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader3);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader3);
+        token0.approve(address(hook), type(uint256).max);
 
         // Give traders and settler some ETH for gas
         vm.deal(trader1, 100 ether);
@@ -320,23 +328,23 @@ contract SettlementPhaseTest is Test {
         bytes32 hash1 = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash1, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, hash1, proof);
 
         // Trader2 commits and will reveal a sell order
         bytes32 salt2 = keccak256("trader2_salt");
         bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
         vm.prank(trader2);
-        hook.commitOrder(poolKey, hash2, 80 ether, proof);
+        hook.commitOrder(poolKey, hash2, proof);
 
         // Advance to REVEAL phase
         vm.roll(block.number + COMMIT_DURATION + 1);
 
-        // Both traders reveal
+        // Both traders reveal (depositAmount added at end)
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
         vm.prank(trader2);
-        hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2);
+        hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2, 80 ether);
 
         // Advance to SETTLE phase
         vm.roll(block.number + REVEAL_DURATION + 1);
@@ -694,29 +702,29 @@ contract SettlementPhaseTest is Test {
         bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash1, 100 ether, proof);
+        hook.commitOrder(poolKey, hash1, proof);
 
         // Trader2: Buy 100 at price 1000
         bytes32 salt2 = keccak256("trader2_salt");
         bytes32 hash2 = _computeCommitmentHash(trader2, 100 ether, 1000e18, true, salt2);
         vm.prank(trader2);
-        hook.commitOrder(poolKey, hash2, 100 ether, proof);
+        hook.commitOrder(poolKey, hash2, proof);
 
         // Trader3: Sell 100 at price 900 (total sell = 100, total buy = 200)
         bytes32 salt3 = keccak256("trader3_salt");
         bytes32 hash3 = _computeCommitmentHash(trader3, 100 ether, 900e18, false, salt3);
         vm.prank(trader3);
-        hook.commitOrder(poolKey, hash3, 100 ether, proof);
+        hook.commitOrder(poolKey, hash3, proof);
 
-        // Advance to REVEAL and reveal all orders
+        // Advance to REVEAL and reveal all orders (depositAmount added at end)
         vm.roll(block.number + COMMIT_DURATION + 1);
 
         vm.prank(trader1);
-        hook.revealOrder(poolKey, 100 ether, 1000e18, true, SALT);
+        hook.revealOrder(poolKey, 100 ether, 1000e18, true, SALT, 100 ether);
         vm.prank(trader2);
-        hook.revealOrder(poolKey, 100 ether, 1000e18, true, salt2);
+        hook.revealOrder(poolKey, 100 ether, 1000e18, true, salt2, 100 ether);
         vm.prank(trader3);
-        hook.revealOrder(poolKey, 100 ether, 900e18, false, salt3);
+        hook.revealOrder(poolKey, 100 ether, 900e18, false, salt3, 100 ether);
 
         // Advance to SETTLE
         vm.roll(block.number + REVEAL_DURATION + 1);
@@ -783,24 +791,25 @@ contract SettlementPhaseTest is Test {
         hook.configurePool(ethPoolKey, _createValidConfig());
         uint256 batchId = hook.startBatch(ethPoolKey);
 
-        // Trader1: buy (deposits quote token, receives ETH)
+        // Trader1: buy (deposits quote token at reveal, receives ETH)
         bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(ethPoolKey, hash1, 100 ether, proof);
+        hook.commitOrder(ethPoolKey, hash1, proof);
 
-        // Trader2: sell (deposits quote token, receives payment in quote)
+        // Trader2: sell (deposits ETH at reveal, receives payment in quote)
         bytes32 salt2 = keccak256("trader2_salt");
         bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
         vm.prank(trader2);
-        hook.commitOrder(ethPoolKey, hash2, 80 ether, proof);
+        hook.commitOrder(ethPoolKey, hash2, proof);
 
         // Advance to REVEAL
         vm.roll(block.number + COMMIT_DURATION + 1);
         vm.prank(trader1);
-        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT);
+        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT, 100 ether);
+        // Seller deposits ETH (token0) at reveal via msg.value
         vm.prank(trader2);
-        hook.revealOrder(ethPoolKey, 80 ether, 950e18, false, salt2);
+        hook.revealOrder{value: 80 ether}(ethPoolKey, 80 ether, 950e18, false, salt2, 80 ether);
 
         // Advance to SETTLE
         vm.roll(block.number + REVEAL_DURATION + 1);
@@ -817,10 +826,10 @@ contract SettlementPhaseTest is Test {
             batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
         );
 
-        // Get claimable token0 (ETH) amount — it's the matched buy volume = 80 ether
-        // Solver sends ETH as msg.value
+        // Dual-token model: netSolverToken0 = totalBuyFills - totalSellFills = 80 - 80 = 0
+        // Seller already deposited their token0 (ETH) at reveal, so solver sends nothing
         vm.prank(settler);
-        hook.settleBatch{value: 80 ether}(ethPoolKey, "", publicInputs);
+        hook.settleBatch(ethPoolKey, "", publicInputs);
 
         assertTrue(hook.isBatchSettled(ethPoolId, batchId), "Batch should be settled");
     }
@@ -831,44 +840,47 @@ contract SettlementPhaseTest is Test {
         hook.configurePool(ethPoolKey, _createValidConfig());
         uint256 batchId = hook.startBatch(ethPoolKey);
 
-        // Trader1: buy
+        // Trader1: buy 100 at 1000
         bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(ethPoolKey, hash1, 100 ether, proof);
+        hook.commitOrder(ethPoolKey, hash1, proof);
 
-        // Trader2: sell
+        // Trader2: sell 50 at 950 (sells less than buyer wants, so solver must cover gap)
         bytes32 salt2 = keccak256("trader2_salt");
-        bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
+        bytes32 hash2 = _computeCommitmentHash(trader2, 50 ether, 950e18, false, salt2);
         vm.prank(trader2);
-        hook.commitOrder(ethPoolKey, hash2, 80 ether, proof);
+        hook.commitOrder(ethPoolKey, hash2, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
         vm.prank(trader1);
-        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT);
+        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT, 100 ether);
+        // Seller deposits ETH (token0) at reveal
         vm.prank(trader2);
-        hook.revealOrder(ethPoolKey, 80 ether, 950e18, false, salt2);
+        hook.revealOrder{value: 50 ether}(ethPoolKey, 50 ether, 950e18, false, salt2, 50 ether);
 
         vm.roll(block.number + REVEAL_DURATION + 1);
 
         Order[] memory orders = new Order[](2);
         orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
-        orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
+        orders[1] = Order({amount: 50 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
         bytes32 ordersRoot = _computeOrdersRoot(orders);
         uint128[] memory fills = new uint128[](2);
-        fills[0] = 80 ether;
-        fills[1] = 80 ether;
+        fills[0] = 50 ether;  // buyer fill (matched with seller)
+        fills[1] = 50 ether;  // seller fill (fully matched)
         bytes32[] memory publicInputs = _buildPublicInputsWithFills(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
+            batchId, 1000e18, 50 ether, 50 ether, 2, ordersRoot, bytes32(0), fills
         );
 
-        // Solver sends excess ETH (100 ether when only 80 needed)
+        // Dual-token: netSolverToken0 = buyFills - sellFills = 50 - 50 = 0
+        // Seller deposited 50 ETH at reveal, which covers buyer's 50 fill exactly.
+        // Solver sends no ETH since none is needed (netSolverToken0 = 0)
         uint256 settlerBalBefore = settler.balance;
         vm.prank(settler);
-        hook.settleBatch{value: 100 ether}(ethPoolKey, "", publicInputs);
+        hook.settleBatch(ethPoolKey, "", publicInputs);
 
-        // Excess 20 ether should be refunded
-        assertEq(settler.balance, settlerBalBefore - 80 ether, "Excess ETH should be refunded");
+        // Settler balance unchanged — no ETH sent, none needed
+        assertEq(settler.balance, settlerBalBefore, "No ETH needed when netSolverToken0 = 0");
     }
 
     function test_settleBatch_withETHAsToken0_revertsInsufficientValue() public {
@@ -877,35 +889,28 @@ contract SettlementPhaseTest is Test {
         hook.configurePool(ethPoolKey, _createValidConfig());
         uint256 batchId = hook.startBatch(ethPoolKey);
 
+        // Only a buyer (no seller), so solver must provide all token0 (ETH)
         bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(ethPoolKey, hash1, 100 ether, proof);
-
-        bytes32 salt2 = keccak256("trader2_salt");
-        bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
-        vm.prank(trader2);
-        hook.commitOrder(ethPoolKey, hash2, 80 ether, proof);
+        hook.commitOrder(ethPoolKey, hash1, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
         vm.prank(trader1);
-        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT);
-        vm.prank(trader2);
-        hook.revealOrder(ethPoolKey, 80 ether, 950e18, false, salt2);
+        hook.revealOrder(ethPoolKey, 100 ether, 1000e18, true, SALT, 100 ether);
 
         vm.roll(block.number + REVEAL_DURATION + 1);
 
-        Order[] memory orders = new Order[](2);
+        Order[] memory orders = new Order[](1);
         orders[0] = Order({amount: 100 ether, limitPrice: 1000e18, trader: trader1, isBuy: true});
-        orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
         bytes32 ordersRoot = _computeOrdersRoot(orders);
-        uint128[] memory fills = new uint128[](2);
-        fills[0] = 80 ether;
-        fills[1] = 80 ether;
+        uint128[] memory fills = new uint128[](1);
+        fills[0] = 80 ether;  // buyer fill
         bytes32[] memory publicInputs = _buildPublicInputsWithFills(
-            batchId, 1000e18, 80 ether, 80 ether, 2, ordersRoot, bytes32(0), fills
+            batchId, 1000e18, 80 ether, 0, 1, ordersRoot, bytes32(0), fills
         );
 
+        // netSolverToken0 = buyFills(80) - sellFills(0) = 80 ether
         // Solver sends insufficient ETH
         vm.expectRevert(abi.encodeWithSelector(Latch__InsufficientSolverLiquidity.selector, 80 ether));
         vm.prank(settler);

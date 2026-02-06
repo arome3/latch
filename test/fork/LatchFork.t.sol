@@ -134,11 +134,17 @@ contract LatchForkTest is Test {
         // Disable batch start bond
         hook.setBatchStartBond(0);
 
-        // Fund traders
+        // Fund traders with both tokens (dual-token deposit model)
+        token0.mint(BUYER, 10_000 ether);
+        token0.mint(SELLER, 10_000 ether);
         token1.mint(BUYER, 10_000 ether);
         token1.mint(SELLER, 10_000 ether);
         vm.prank(BUYER);
+        token0.approve(address(hook), type(uint256).max);
+        vm.prank(BUYER);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(SELLER);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(SELLER);
         token1.approve(address(hook), type(uint256).max);
 
@@ -240,22 +246,22 @@ contract LatchForkTest is Test {
             Constants.COMMITMENT_DOMAIN, BUYER, uint128(10 ether), uint128(1000e18), true, buyerSalt
         ));
         vm.prank(BUYER);
-        hook.commitOrder(poolKey, buyerHash, 10 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, buyerHash, new bytes32[](0));
 
         bytes32 sellerHash = keccak256(abi.encodePacked(
             Constants.COMMITMENT_DOMAIN, SELLER, uint128(10 ether), uint128(900e18), false, sellerSalt
         ));
         vm.prank(SELLER);
-        hook.commitOrder(poolKey, sellerHash, 10 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, sellerHash, new bytes32[](0));
 
         // === REVEAL PHASE ===
         vm.roll(block.number + COMMIT_DURATION + 1);
 
         vm.prank(BUYER);
-        hook.revealOrder(poolKey, 10 ether, 1000e18, true, buyerSalt);
+        hook.revealOrder(poolKey, 10 ether, 1000e18, true, buyerSalt, 10 ether);
 
         vm.prank(SELLER);
-        hook.revealOrder(poolKey, 10 ether, 900e18, false, sellerSalt);
+        hook.revealOrder(poolKey, 10 ether, 900e18, false, sellerSalt, 10 ether);
 
         // === SETTLE PHASE ===
         vm.roll(block.number + REVEAL_DURATION + 1);

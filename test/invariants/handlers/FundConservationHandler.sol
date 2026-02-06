@@ -128,7 +128,7 @@ contract FundConservationHandler is Test {
 
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader);
-        try hook.commitOrder(poolKey, hash, depositAmount, proof) {
+        try hook.commitOrder(poolKey, hash, proof) {
             hasCommitted[trader] = true;
             ghost_commitCount++;
             ghost_totalDeposited += depositAmount;
@@ -154,7 +154,7 @@ contract FundConservationHandler is Test {
 
         vm.prank(trader);
         try hook.revealOrder(
-            poolKey, traderAmounts[trader], traderPrices[trader], traderIsBuy[trader], traderSalts[trader]
+            poolKey, traderAmounts[trader], traderPrices[trader], traderIsBuy[trader], traderSalts[trader], traderAmounts[trader]
         ) {
             hasRevealed[trader] = true;
             ghost_revealCount++;

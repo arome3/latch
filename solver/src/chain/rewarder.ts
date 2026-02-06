@@ -42,7 +42,7 @@ export class RewardsClaimer {
 
     for (const token of this.tokens) {
       try {
-        const claimable: bigint = await this.rewards.getClaimable(
+        const claimable: bigint = await this.rewards.pendingRewards(
           solverAddr,
           token
         );

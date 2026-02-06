@@ -128,10 +128,13 @@ contract CompliantPoolTest is Test {
         whitelistRegistry.addToWhitelist(trader2);
         // trader3 intentionally NOT added
 
-        // Fund all traders
+        // Fund all traders with both tokens (dual-token deposit model)
         address[3] memory traders = [trader1, trader2, trader3];
         for (uint256 i = 0; i < 3; i++) {
+            token0.mint(traders[i], 1000 ether);
             token1.mint(traders[i], 1000 ether);
+            vm.prank(traders[i]);
+            token0.approve(address(hook), type(uint256).max);
             vm.prank(traders[i]);
             token1.approve(address(hook), type(uint256).max);
             vm.deal(traders[i], 100 ether);
@@ -169,12 +172,12 @@ contract CompliantPoolTest is Test {
         bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, DEFAULT_SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash1, 100 ether, proof);
+        hook.commitOrder(poolKey, hash1, proof);
 
         // trader2 should commit successfully
         bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, keccak256("salt2"));
         vm.prank(trader2);
-        hook.commitOrder(poolKey, hash2, 80 ether, proof);
+        hook.commitOrder(poolKey, hash2, proof);
     }
 
     // ============ Test 2: Non-whitelisted trader is rejected ============
@@ -200,7 +203,7 @@ contract CompliantPoolTest is Test {
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader3);
         vm.expectRevert("Not whitelisted");
-        hook.commitOrder(poolKey, hash3, 50 ether, proof);
+        hook.commitOrder(poolKey, hash3, proof);
     }
 
     // ============ Test 3: Whitelist root snapshot ============
@@ -231,7 +234,7 @@ contract CompliantPoolTest is Test {
         bytes32 hash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, DEFAULT_SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash1, 100 ether, proof);
+        hook.commitOrder(poolKey, hash1, proof);
     }
 
     // ============ Test 4: Full lifecycle in COMPLIANT mode ============
@@ -317,7 +320,7 @@ contract CompliantPoolTest is Test {
         bytes32 hash = _computeCommitmentHash(trader, amount, limitPrice, isBuy, salt);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader);
-        hook.commitOrder(poolKey, hash, amount, proof);
+        hook.commitOrder(poolKey, hash, proof);
     }
 
     function _revealOrder(
@@ -328,7 +331,7 @@ contract CompliantPoolTest is Test {
         bytes32 salt
     ) internal {
         vm.prank(trader);
-        hook.revealOrder(poolKey, amount, limitPrice, isBuy, salt);
+        hook.revealOrder(poolKey, amount, limitPrice, isBuy, salt, amount);
     }
 
     function _computeOrdersRoot(Order[] memory orders) internal pure returns (bytes32) {

@@ -498,3 +498,11 @@ error Latch__WithdrawalCancelled();
 
 /// @notice Thrown when instant emergency withdraw is blocked because timelock is set
 error Latch__InstantWithdrawBlocked();
+
+// ============ Dual-Token Deposit Errors ============
+
+/// @notice Thrown when a revealed trader in a settled batch tries to refund instead of claim
+error Latch__UseClaimTokens();
+
+/// @notice Thrown when a revealed trader tries to refund during the active settle phase
+error Latch__SettlePhaseActive();

@@ -173,6 +173,11 @@ contract ClaimPhaseTest is Test {
         token1.mint(trader2, 1000 ether);
         token1.mint(trader3, 1000 ether);
 
+        // Fund sellers with token0 for deposits (dual-token model: sellers deposit token0)
+        token0.mint(trader1, 1000 ether);
+        token0.mint(trader2, 1000 ether);
+        token0.mint(trader3, 1000 ether);
+
         // Fund hook with token0 for claims (simulating successful settlement)
         // Buyer claims token0 (base currency)
         token0.mint(address(hook), 10000 ether);
@@ -181,13 +186,19 @@ contract ClaimPhaseTest is Test {
         // 80 ETH * 1000e18 / 1e18 = 80000 ETH worth of token1
         token1.mint(address(hook), 100000 ether);
 
-        // Approve hook for deposits
+        // Approve hook for deposits (token1 for buyers/bonds, token0 for sellers)
         vm.prank(trader1);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader1);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader2);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader3);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader3);
+        token0.approve(address(hook), type(uint256).max);
 
         // Give addresses ETH for gas
         vm.deal(trader1, 100 ether);
@@ -289,23 +300,23 @@ contract ClaimPhaseTest is Test {
         bytes32 hash1 = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash1, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, hash1, proof);
 
         // Trader2 commits and will reveal a sell order
         bytes32 salt2 = keccak256("trader2_salt");
         bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
         vm.prank(trader2);
-        hook.commitOrder(poolKey, hash2, 80 ether, proof);
+        hook.commitOrder(poolKey, hash2, proof);
 
         // Advance to REVEAL phase
         vm.roll(block.number + COMMIT_DURATION + 1);
 
-        // Both traders reveal
+        // Both traders reveal (depositAmount added at end)
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
         vm.prank(trader2);
-        hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2);
+        hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2, 80 ether);
 
         // Advance to SETTLE phase
         vm.roll(block.number + REVEAL_DURATION + 1);

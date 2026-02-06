@@ -28,7 +28,6 @@ import {
     Latch__NoBatchActive,
     Latch__BatchFull,
     Latch__ZeroCommitmentHash,
-    Latch__ZeroDeposit,
     Latch__CommitmentAlreadyExists,
     Latch__WrongPhase,
     Latch__InsufficientDeposit,
@@ -187,7 +186,7 @@ contract CommitPhaseTest is Test {
         uint256 indexed batchId,
         address indexed trader,
         bytes32 commitmentHash,
-        uint128 depositAmount
+        uint128 bondAmount
     );
 
     function setUp() public {
@@ -336,17 +335,15 @@ contract CommitPhaseTest is Test {
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
-        uint128 depositAmount = 100 ether;
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, depositAmount, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
         // Verify commitment stored correctly
         (Commitment memory commitment, CommitmentStatus status) = hook.getCommitment(poolId, 1, trader1);
 
         assertEq(commitment.trader, trader1);
         assertEq(commitment.commitmentHash, commitmentHash);
-        assertEq(commitment.depositAmount, depositAmount);
         assertEq(uint8(status), uint8(CommitmentStatus.PENDING));
     }
 
@@ -355,16 +352,16 @@ contract CommitPhaseTest is Test {
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
-        uint128 depositAmount = 100 ether;
 
         uint256 balanceBefore = token.balanceOf(trader1);
         uint256 hookBalanceBefore = token.balanceOf(address(hook));
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, depositAmount, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
-        assertEq(token.balanceOf(trader1), balanceBefore - depositAmount);
-        assertEq(token.balanceOf(address(hook)), hookBalanceBefore + depositAmount);
+        // Bond amount is now protocol-wide, verify some transfer occurred
+        assertLe(token.balanceOf(trader1), balanceBefore);
+        assertGe(token.balanceOf(address(hook)), hookBalanceBefore);
     }
 
     function test_commitOrder_incrementsCommitmentCount() public {
@@ -375,13 +372,13 @@ contract CommitPhaseTest is Test {
         bytes32 commitmentHash2 = _computeCommitmentHash(trader2, 50 ether, 900e18, false, bytes32("salt2"));
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash1, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash1, new bytes32[](0));
 
         Batch memory batch = hook.getBatch(poolId, 1);
         assertEq(batch.orderCount, 1);
 
         vm.prank(trader2);
-        hook.commitOrder(poolKey, commitmentHash2, 50 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash2, new bytes32[](0));
 
         batch = hook.getBatch(poolId, 1);
         assertEq(batch.orderCount, 2);
@@ -394,7 +391,7 @@ contract CommitPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
         (, CommitmentStatus status) = hook.getCommitment(poolId, 1, trader1);
         assertEq(uint8(status), uint8(CommitmentStatus.PENDING));
@@ -406,18 +403,33 @@ contract CommitPhaseTest is Test {
 
         vm.prank(trader1);
         vm.expectRevert(Latch__ZeroCommitmentHash.selector);
-        hook.commitOrder(poolKey, bytes32(0), 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, bytes32(0), new bytes32[](0));
     }
 
-    function test_commitOrder_revertsZeroDeposit() public {
+    function test_commitOrder_bondEnforcedWhenNonZero() public {
         _configurePool(PoolMode.PERMISSIONLESS);
+
+        // Set a non-zero commit bond amount
+        uint128 bondAmount = 1 ether;
+        hook.setCommitBondAmount(bondAmount);
+
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
 
+        uint256 traderBalanceBefore = token.balanceOf(trader1);
+        uint256 hookBalanceBefore = token.balanceOf(address(hook));
+
         vm.prank(trader1);
-        vm.expectRevert(Latch__ZeroDeposit.selector);
-        hook.commitOrder(poolKey, commitmentHash, 0, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
+
+        // Verify bond was transferred
+        assertEq(token.balanceOf(trader1), traderBalanceBefore - bondAmount);
+        assertEq(token.balanceOf(address(hook)), hookBalanceBefore + bondAmount);
+
+        // Verify commitment stores the bond amount
+        (Commitment memory commitment,) = hook.getCommitment(poolId, 1, trader1);
+        assertEq(commitment.bondAmount, bondAmount);
     }
 
     function test_commitOrder_revertsNoBatchActive() public {
@@ -428,7 +440,7 @@ contract CommitPhaseTest is Test {
 
         vm.prank(trader1);
         vm.expectRevert(Latch__NoBatchActive.selector);
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
     }
 
     function test_commitOrder_revertsWrongPhase() public {
@@ -444,7 +456,7 @@ contract CommitPhaseTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(Latch__WrongPhase.selector, uint8(BatchPhase.COMMIT), uint8(BatchPhase.REVEAL))
         );
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
     }
 
     function test_commitOrder_revertsBatchFull() public {
@@ -462,7 +474,7 @@ contract CommitPhaseTest is Test {
             bytes32 fillerHash = _computeCommitmentHash(filler, 10 ether, 1000e18, true, bytes32(i));
 
             vm.prank(filler);
-            hook.commitOrder(poolKey, fillerHash, 10 ether, new bytes32[](0));
+            hook.commitOrder(poolKey, fillerHash, new bytes32[](0));
         }
 
         // Try to add one more
@@ -470,7 +482,7 @@ contract CommitPhaseTest is Test {
 
         vm.prank(trader1);
         vm.expectRevert(Latch__BatchFull.selector);
-        hook.commitOrder(poolKey, extraHash, 10 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, extraHash, new bytes32[](0));
     }
 
     function test_commitOrder_revertsDuplicateCommitment() public {
@@ -480,14 +492,14 @@ contract CommitPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
         // Try to commit again from same trader
         bytes32 commitmentHash2 = _computeCommitmentHash(trader1, 50 ether, 900e18, false, bytes32("salt2"));
 
         vm.prank(trader1);
         vm.expectRevert(Latch__CommitmentAlreadyExists.selector);
-        hook.commitOrder(poolKey, commitmentHash2, 50 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash2, new bytes32[](0));
     }
 
     function test_commitOrder_emitsEvent() public {
@@ -495,13 +507,13 @@ contract CommitPhaseTest is Test {
         hook.startBatch(poolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
-        uint128 depositAmount = 100 ether;
+        uint128 bondAmount = hook.commitBondAmount();
 
         vm.expectEmit(true, true, true, true);
-        emit OrderCommitted(poolId, 1, trader1, commitmentHash, depositAmount);
+        emit OrderCommitted(poolId, 1, trader1, commitmentHash, bondAmount);
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, depositAmount, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
     }
 
     // ============ COMPLIANT Pool Tests ============
@@ -515,7 +527,7 @@ contract CommitPhaseTest is Test {
 
         // Mock registry passes for any non-FAIL root
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
         (Commitment memory commitment,) = hook.getCommitment(poolId, 1, trader1);
         assertEq(commitment.trader, trader1);
@@ -541,7 +553,7 @@ contract CommitPhaseTest is Test {
 
         vm.prank(trader1);
         vm.expectRevert(); // NotWhitelisted error
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
     }
 
     function test_commitOrder_permissionless_emptyProofSucceeds() public {
@@ -552,7 +564,7 @@ contract CommitPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt"));
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
         (Commitment memory commitment,) = hook.getCommitment(poolId, 1, trader1);
         assertEq(commitment.trader, trader1);
@@ -574,16 +586,16 @@ contract CommitPhaseTest is Test {
         hook.startBatch(ethPoolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 1 ether, 1000e18, true, bytes32("salt"));
-        uint128 depositAmount = 1 ether;
+        uint128 bondAmount = hook.commitBondAmount();
 
         uint256 balanceBefore = trader1.balance;
         uint256 hookBalanceBefore = address(hook).balance;
 
         vm.prank(trader1);
-        hook.commitOrder{value: depositAmount}(ethPoolKey, commitmentHash, depositAmount, new bytes32[](0));
+        hook.commitOrder{value: bondAmount}(ethPoolKey, commitmentHash, new bytes32[](0));
 
-        assertEq(trader1.balance, balanceBefore - depositAmount);
-        assertEq(address(hook).balance, hookBalanceBefore + depositAmount);
+        assertEq(trader1.balance, balanceBefore - bondAmount);
+        assertEq(address(hook).balance, hookBalanceBefore + bondAmount);
     }
 
     function test_commitOrder_ethDeposit_refundsExcess() public {
@@ -596,20 +608,23 @@ contract CommitPhaseTest is Test {
             hooks: hook
         });
 
+        // Set a non-zero commit bond to test ETH refund behavior
+        uint128 bondAmount = 1 ether;
+        hook.setCommitBondAmount(bondAmount);
+
         hook.configurePool(ethPoolKey, _createValidConfig(PoolMode.PERMISSIONLESS));
         hook.startBatch(ethPoolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 1 ether, 1000e18, true, bytes32("salt"));
-        uint128 depositAmount = 1 ether;
         uint256 excessAmount = 0.5 ether;
 
         uint256 balanceBefore = trader1.balance;
 
         vm.prank(trader1);
-        hook.commitOrder{value: depositAmount + excessAmount}(ethPoolKey, commitmentHash, depositAmount, new bytes32[](0));
+        hook.commitOrder{value: bondAmount + excessAmount}(ethPoolKey, commitmentHash, new bytes32[](0));
 
-        // Should only have lost depositAmount, excess refunded
-        assertEq(trader1.balance, balanceBefore - depositAmount);
+        // Should only have lost bondAmount, excess refunded
+        assertEq(trader1.balance, balanceBefore - bondAmount);
     }
 
     function test_commitOrder_ethDeposit_insufficientReverts() public {
@@ -622,15 +637,18 @@ contract CommitPhaseTest is Test {
             hooks: hook
         });
 
+        // Set a non-zero commit bond to test insufficient ETH revert
+        uint128 bondAmount = 1 ether;
+        hook.setCommitBondAmount(bondAmount);
+
         hook.configurePool(ethPoolKey, _createValidConfig(PoolMode.PERMISSIONLESS));
         hook.startBatch(ethPoolKey);
 
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 1 ether, 1000e18, true, bytes32("salt"));
-        uint128 depositAmount = 1 ether;
 
         vm.prank(trader1);
-        vm.expectRevert(abi.encodeWithSelector(Latch__InsufficientDeposit.selector, depositAmount, 0.5 ether));
-        hook.commitOrder{value: 0.5 ether}(ethPoolKey, commitmentHash, depositAmount, new bytes32[](0));
+        vm.expectRevert(abi.encodeWithSelector(Latch__InsufficientDeposit.selector, bondAmount, 0.5 ether));
+        hook.commitOrder{value: 0.5 ether}(ethPoolKey, commitmentHash, new bytes32[](0));
     }
 
     // ============ Gas Benchmark Tests ============
@@ -655,7 +673,7 @@ contract CommitPhaseTest is Test {
 
         vm.prank(trader1);
         uint256 gasBefore = gasleft();
-        hook.commitOrder(poolKey, commitmentHash, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
         uint256 gasUsed = gasBefore - gasleft();
 
         // Target: < 200,000 gas for first commit (cold storage + ERC20 transfer)
@@ -670,14 +688,14 @@ contract CommitPhaseTest is Test {
         // First commitment to warm storage
         bytes32 commitmentHash1 = _computeCommitmentHash(trader1, 100 ether, 1000e18, true, bytes32("salt1"));
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash1, 100 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash1, new bytes32[](0));
 
         // Second commitment
         bytes32 commitmentHash2 = _computeCommitmentHash(trader2, 50 ether, 900e18, false, bytes32("salt2"));
 
         vm.prank(trader2);
         uint256 gasBefore = gasleft();
-        hook.commitOrder(poolKey, commitmentHash2, 50 ether, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash2, new bytes32[](0));
         uint256 gasUsed = gasBefore - gasleft();
 
         // Target: < 180,000 gas for subsequent commits (still has ERC20 transfer overhead)
@@ -697,10 +715,10 @@ contract CommitPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, depositAmount, 1000e18, true, bytes32("salt"));
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, depositAmount, new bytes32[](0));
+        hook.commitOrder(poolKey, commitmentHash, new bytes32[](0));
 
         (Commitment memory commitment,) = hook.getCommitment(poolId, 1, trader1);
-        assertEq(commitment.depositAmount, depositAmount);
+        assertEq(commitment.bondAmount, hook.commitBondAmount());
     }
 
     function testFuzz_startBatch_afterAnyBlockAdvance(uint32 blocksToAdvance) public {

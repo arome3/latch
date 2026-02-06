@@ -81,13 +81,10 @@ async function main() {
     });
   }
 
-  // Hook contract for reading pool config
+  // Hook contract for reading pool config (getPoolConfig is in LATCH_HOOK_ABI)
   const hookContract = new ethers.Contract(
     config.latchHookAddress,
-    [
-      ...LATCH_HOOK_ABI,
-      "function getPoolConfig(bytes32 poolId) external view returns (tuple(uint24 feeRate, uint8 whitelistMode, bool configured, bytes32 whitelistRoot))",
-    ],
+    LATCH_HOOK_ABI,
     provider
   );
 
@@ -211,19 +208,33 @@ async function processBatch(
   // 8. Parse proof artifacts
   const { proofHex, publicInputsHex } = parseProofArtifacts(artifacts);
 
-  // 9. Approve token0 for buy-side fills
-  // The hook pulls token0 from the solver to fill buy orders.
-  // Total needed = sum of buy fills (capped by matched volume).
+  // 9. Approve token0 for net solver liquidity
+  // In the dual-token model, sellers deposit token0 at reveal time.
+  // The solver only provides the gap: totalBuyFills - totalSellFills.
   let totalBuyFills = 0n;
+  let totalSellFills = 0n;
   for (let i = 0; i < orders.length; i++) {
     if (orders[i].isBuy) {
       totalBuyFills += fills[i];
+    } else {
+      totalSellFills += fills[i];
     }
   }
+  const netSolverToken0 = totalBuyFills > totalSellFills
+    ? totalBuyFills - totalSellFills
+    : 0n;
 
-  if (totalBuyFills > 0n) {
-    await settler.approveToken0(totalBuyFills);
+  if (netSolverToken0 > 0n) {
+    await settler.approveToken0(netSolverToken0);
   }
+  logger.info(
+    {
+      totalBuyFills: totalBuyFills.toString(),
+      totalSellFills: totalSellFills.toString(),
+      netSolverToken0: netSolverToken0.toString(),
+    },
+    "Solver liquidity computed"
+  );
 
   // 10. Submit settlement
   const receipt = await settler.settle(proofHex, publicInputsHex);

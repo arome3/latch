@@ -54,8 +54,8 @@ fi
 # ── 4. Determine RPC URL and private key ────────────────────────
 if [ "${CHAIN_ID}" = "31337" ]; then
     RPC_URL="http://127.0.0.1:8545"
-    # Anvil account #1 (solver account, separate from deployer #0)
-    PRIVATE_KEY="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+    # Anvil account #3 (solver: 0x90F79bf6EB2c4f870365E785982E1f101E93b906)
+    PRIVATE_KEY="0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
 else
     RPC_URL="${RPC_URL:-}"
     PRIVATE_KEY="${SOLVER_PRIVATE_KEY:-}"
@@ -66,10 +66,11 @@ fi
 
 # ── 5. Compute pool ID (if tokens available) ────────────────────
 POOL_ID=""
-if [ -n "${TOKEN0}" ] && [ -n "${TOKEN1}" ]; then
+if [ -n "${TOKEN0}" ] && [ -n "${TOKEN1}" ] && command -v cast &> /dev/null; then
     # Pool ID is keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))
-    # For local testing we'll leave it for the solver to compute on startup
-    POOL_ID="auto"
+    POOL_ID=$(cast keccak "$(cast abi-encode 'x(address,address,uint24,int24,address)' \
+        "${TOKEN0}" "${TOKEN1}" "${POOL_FEE}" "${TICK_SPACING}" "${LATCH_HOOK}")")
+    echo "Computed Pool ID: ${POOL_ID}"
 fi
 
 # ── 6. Check solver directory ───────────────────────────────────

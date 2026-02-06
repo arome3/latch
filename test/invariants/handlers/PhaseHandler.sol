@@ -127,7 +127,7 @@ contract PhaseHandler is Test {
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader);
         // Should revert with Latch__WrongPhase — we just catch
-        try hook.commitOrder(poolKey, hash, 10 ether, proof) {
+        try hook.commitOrder(poolKey, hash, proof) {
             // If this somehow succeeds, it means phase is wrong — but we can't fail here
             // The invariant test will catch the inconsistency
         } catch {
@@ -144,7 +144,7 @@ contract PhaseHandler is Test {
         // Reveal during COMMIT should fail
         address trader = traders[0];
         vm.prank(trader);
-        try hook.revealOrder(poolKey, 10 ether, 1000e18, true, keccak256("fake")) {
+        try hook.revealOrder(poolKey, 10 ether, 1000e18, true, keccak256("fake"), 10 ether) {
             // Unexpected success
         } catch {
             // Expected
@@ -178,7 +178,7 @@ contract PhaseHandler is Test {
 
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader);
-        try hook.commitOrder(poolKey, hash, depositAmount, proof) {
+        try hook.commitOrder(poolKey, hash, proof) {
             hasCommitted[trader] = true;
         } catch {}
     }
@@ -202,7 +202,7 @@ contract PhaseHandler is Test {
 
         vm.prank(trader);
         try hook.revealOrder(
-            poolKey, traderAmounts[trader], traderPrices[trader], traderIsBuy[trader], traderSalts[trader]
+            poolKey, traderAmounts[trader], traderPrices[trader], traderIsBuy[trader], traderSalts[trader], traderAmounts[trader]
         ) {
             hasRevealed[trader] = true;
         } catch {}

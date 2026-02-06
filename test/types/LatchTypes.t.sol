@@ -173,12 +173,12 @@ contract LatchTypesTest is Test {
         Commitment memory commitment = Commitment({
             trader: address(0x5678),
             commitmentHash: hash,
-            depositAmount: 100 ether
+            bondAmount: 100 ether
         });
 
         assertEq(commitment.trader, address(0x5678));
         assertEq(commitment.commitmentHash, hash);
-        assertEq(commitment.depositAmount, 100 ether);
+        assertEq(commitment.bondAmount, 100 ether);
     }
 
     function test_Commitment_statusTrackedSeparately() public pure {
@@ -187,12 +187,12 @@ contract LatchTypesTest is Test {
         Commitment memory commitment = Commitment({
             trader: address(0x5678),
             commitmentHash: keccak256("test"),
-            depositAmount: 100 ether
+            bondAmount: 100 ether
         });
 
         // Commitment data is immutable once stored
         assertEq(commitment.trader, address(0x5678));
-        assertEq(commitment.depositAmount, 100 ether);
+        assertEq(commitment.bondAmount, 100 ether);
     }
 
     // ============ Batch Tests ============
@@ -371,12 +371,12 @@ contract LatchTypesTest is Test {
         Commitment memory c = Commitment({
             trader: trader,
             commitmentHash: hash,
-            depositAmount: deposit
+            bondAmount: deposit
         });
 
         assertEq(c.trader, trader);
         assertEq(c.commitmentHash, hash);
-        assertEq(c.depositAmount, deposit);
+        assertEq(c.bondAmount, deposit);
     }
 
     function testFuzz_PoolConfig_durations(
@@ -441,12 +441,12 @@ contract StorageLayoutTest is Test {
         storedCommitment = Commitment({
             trader: address(0xBEEF),
             commitmentHash: keccak256("hash"),
-            depositAmount: 999 ether
+            bondAmount: 999 ether
         });
 
         assertEq(storedCommitment.trader, address(0xBEEF));
         assertEq(storedCommitment.commitmentHash, keccak256("hash"));
-        assertEq(storedCommitment.depositAmount, 999 ether);
+        assertEq(storedCommitment.bondAmount, 999 ether);
     }
 
     function test_Order_storageSlots() public {

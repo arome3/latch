@@ -5,14 +5,14 @@
  */
 
 export const LATCH_HOOK_ABI = [
-  // Events
-  "event BatchStarted(bytes32 indexed poolId, uint256 indexed batchId, uint64 startBlock, uint64 commitEndBlock, uint64 revealEndBlock, uint64 settleEndBlock, uint64 claimEndBlock)",
-  "event OrderRevealedData(bytes32 indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount, uint128 limitPrice, bool isBuy)",
+  // Events (must match LatchHook.sol exactly for topic hash matching)
+  "event BatchStarted(bytes32 indexed poolId, uint256 indexed batchId, uint64 startBlock, uint64 commitEndBlock)",
+  "event OrderRevealedData(bytes32 indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt)",
   "event BatchSettled(bytes32 indexed poolId, uint256 indexed batchId, uint128 clearingPrice, uint128 totalBuyVolume, uint128 totalSellVolume, bytes32 ordersRoot)",
 
   // Read functions
   "function getBatchPhase(bytes32 poolId, uint256 batchId) external view returns (uint8)",
-  "function getSettledBatch(bytes32 poolId, uint256 batchId) external view returns (tuple(uint256 batchId, uint128 clearingPrice, uint128 totalBuyVolume, uint128 totalSellVolume, uint32 orderCount, bytes32 ordersRoot, uint64 settledAt))",
+  "function getPoolConfig(bytes32 poolId) external view returns (tuple(uint8 mode, uint32 commitDuration, uint32 revealDuration, uint32 settleDuration, uint32 claimDuration, uint16 feeRate, bytes32 whitelistRoot))",
   "function isBatchSettled(bytes32 poolId, uint256 batchId) external view returns (bool)",
 
   // Write functions
@@ -27,5 +27,5 @@ export const ERC20_ABI = [
 
 export const SOLVER_REWARDS_ABI = [
   "function claim(address token) external",
-  "function getClaimable(address solver, address token) external view returns (uint256)",
+  "function pendingRewards(address solver, address token) external view returns (uint256)",
 ] as const;

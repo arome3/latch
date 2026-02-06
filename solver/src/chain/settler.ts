@@ -91,7 +91,9 @@ export class BatchSettler {
 
     const receipt = await withRetry(
       async () => {
-        const tx = await this.hook.settleBatch(keyTuple, proofHex, publicInputsHex);
+        // Fetch fresh nonce to avoid stale cache after approval tx
+        const nonce = await this.signer.getNonce("pending");
+        const tx = await this.hook.settleBatch(keyTuple, proofHex, publicInputsHex, { nonce });
         return tx.wait() as Promise<ethers.TransactionReceipt>;
       },
       { maxRetries: 2, baseDelayMs: 3000, logger: this.logger }

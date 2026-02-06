@@ -47,11 +47,17 @@ contract MultiPoolTest is LatchTestBase {
         });
         poolId2 = poolKey2.toId();
 
-        // Fund traders for the second pool (token3 is quote currency)
+        // Fund traders for the second pool (dual-token deposit model)
+        token2.mint(trader1, 1000 ether);
+        token2.mint(trader2, 1000 ether);
         token3.mint(trader1, 1000 ether);
         token3.mint(trader2, 1000 ether);
         vm.prank(trader1);
+        token2.approve(address(hook), type(uint256).max);
+        vm.prank(trader1);
         token3.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
+        token2.approve(address(hook), type(uint256).max);
         vm.prank(trader2);
         token3.approve(address(hook), type(uint256).max);
 
@@ -103,7 +109,7 @@ contract MultiPoolTest is LatchTestBase {
         bytes32 hash = _computeCommitmentHash(trader1, 50 ether, 900e18, true, keccak256("pool2_salt"));
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey2, hash, 50 ether, proof);
+        hook.commitOrder(poolKey2, hash, proof);
     }
 
     // ============ Test 2: Different configurations per pool ============
@@ -194,16 +200,16 @@ contract MultiPoolTest is LatchTestBase {
         bytes32[] memory proof = new bytes32[](0);
 
         vm.prank(trader1);
-        hook.commitOrder(poolKey2, hash1, 60 ether, proof);
+        hook.commitOrder(poolKey2, hash1, proof);
         vm.prank(trader2);
-        hook.commitOrder(poolKey2, hash2, 60 ether, proof);
+        hook.commitOrder(poolKey2, hash2, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
 
         vm.prank(trader1);
-        hook.revealOrder(poolKey2, 60 ether, clearingPrice, true, p2Salt1);
+        hook.revealOrder(poolKey2, 60 ether, clearingPrice, true, p2Salt1, 60 ether);
         vm.prank(trader2);
-        hook.revealOrder(poolKey2, 60 ether, clearingPrice, false, p2Salt2);
+        hook.revealOrder(poolKey2, 60 ether, clearingPrice, false, p2Salt2, 60 ether);
 
         vm.roll(block.number + REVEAL_DURATION + 1);
 

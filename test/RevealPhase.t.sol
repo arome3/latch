@@ -27,7 +27,10 @@ import {
     Latch__CommitmentHashMismatch,
     Latch__ZeroOrderAmount,
     Latch__ZeroOrderPrice,
-    Latch__AmountExceedsDeposit
+    Latch__InsufficientDeposit,
+    Latch__ZeroDeposit,
+    Latch__SettlePhaseActive,
+    Latch__UseClaimTokens
 } from "../src/types/Errors.sol";
 import {IWhitelistRegistry} from "../src/interfaces/IWhitelistRegistry.sol";
 import {IBatchVerifier} from "../src/interfaces/IBatchVerifier.sol";
@@ -170,9 +173,9 @@ contract RevealPhaseTest is Test {
             address(this)
         );
 
-        // Set up pool key (currency0 is dummy, currency1 is the deposit token)
+        // Set up pool key (currency0 for seller deposits, currency1 for buyer deposits)
         poolKey = PoolKey({
-            currency0: Currency.wrap(address(0x1)), // Dummy address for token0
+            currency0: Currency.wrap(address(token0)),
             currency1: Currency.wrap(address(token1)),
             fee: 3000,
             tickSpacing: 60,
@@ -180,13 +183,19 @@ contract RevealPhaseTest is Test {
         });
         poolId = poolKey.toId();
 
-        // Fund traders
+        // Fund traders with both tokens
+        token0.mint(trader1, 1000 ether);
+        token0.mint(trader2, 1000 ether);
         token1.mint(trader1, 1000 ether);
         token1.mint(trader2, 1000 ether);
 
-        // Approve hook for deposits
+        // Approve hook for deposits (both tokens)
+        vm.prank(trader1);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader1);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader2);
         token1.approve(address(hook), type(uint256).max);
 
@@ -240,7 +249,7 @@ contract RevealPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, commitmentHash, proof);
 
         // Advance to REVEAL phase
         vm.roll(block.number + COMMIT_DURATION + 1);
@@ -265,7 +274,7 @@ contract RevealPhaseTest is Test {
 
         // Reveal the order
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
         // Verify commitment status updated
         (Commitment memory commitment, CommitmentStatus status) = hook.getCommitment(poolId, batchId, trader1);
@@ -290,7 +299,7 @@ contract RevealPhaseTest is Test {
         emit ILatchHookEvents.OrderRevealed(poolId, 1, trader1);
 
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnNoBatch() public {
@@ -299,7 +308,7 @@ contract RevealPhaseTest is Test {
 
         vm.expectRevert(Latch__NoBatchActive.selector);
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnWrongPhase_commit() public {
@@ -309,7 +318,7 @@ contract RevealPhaseTest is Test {
         // Still in COMMIT phase
         vm.expectRevert(abi.encodeWithSelector(Latch__WrongPhase.selector, uint8(BatchPhase.REVEAL), uint8(BatchPhase.COMMIT)));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnWrongPhase_settle() public {
@@ -318,7 +327,7 @@ contract RevealPhaseTest is Test {
         // Now in SETTLE phase, not REVEAL
         vm.expectRevert(abi.encodeWithSelector(Latch__WrongPhase.selector, uint8(BatchPhase.REVEAL), uint8(BatchPhase.SETTLE)));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnNoCommitment() public {
@@ -327,7 +336,7 @@ contract RevealPhaseTest is Test {
         // Try to reveal without having committed
         vm.expectRevert(Latch__CommitmentNotFound.selector);
         vm.prank(trader2); // trader2 didn't commit
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnAlreadyRevealed() public {
@@ -335,12 +344,12 @@ contract RevealPhaseTest is Test {
 
         // First reveal succeeds
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
         // Second reveal should fail
         vm.expectRevert(Latch__CommitmentAlreadyRevealed.selector);
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnHashMismatch_wrongAmount() public {
@@ -353,7 +362,7 @@ contract RevealPhaseTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(Latch__CommitmentHashMismatch.selector, expectedHash, actualHash));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, wrongAmount, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, wrongAmount, LIMIT_PRICE, true, SALT, wrongAmount);
     }
 
     function test_revealOrder_revertsOnHashMismatch_wrongPrice() public {
@@ -366,7 +375,7 @@ contract RevealPhaseTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(Latch__CommitmentHashMismatch.selector, expectedHash, actualHash));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, wrongPrice, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, wrongPrice, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnHashMismatch_wrongDirection() public {
@@ -378,7 +387,7 @@ contract RevealPhaseTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(Latch__CommitmentHashMismatch.selector, expectedHash, actualHash));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, false, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, false, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnHashMismatch_wrongSalt() public {
@@ -391,7 +400,7 @@ contract RevealPhaseTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(Latch__CommitmentHashMismatch.selector, expectedHash, actualHash));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, wrongSalt);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, wrongSalt, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnZeroAmount() public {
@@ -404,14 +413,14 @@ contract RevealPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, 0, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, commitmentHash, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
 
         // Reveal with zero amount - should fail validation
         vm.expectRevert(Latch__ZeroOrderAmount.selector);
         vm.prank(trader1);
-        hook.revealOrder(poolKey, 0, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, 0, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnZeroPrice() public {
@@ -422,33 +431,34 @@ contract RevealPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, 0, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, commitmentHash, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
 
         // Reveal with zero price - should fail validation
         vm.expectRevert(Latch__ZeroOrderPrice.selector);
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, 0, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, 0, true, SALT, DEPOSIT_AMOUNT);
     }
 
     function test_revealOrder_revertsOnAmountExceedsDeposit() public {
         hook.configurePool(poolKey, _createValidConfig());
         hook.startBatch(poolKey);
 
-        // Commit with an amount larger than deposit
-        uint128 orderAmount = 200 ether; // More than DEPOSIT_AMOUNT
+        // Commit with an amount larger than the deposit we'll provide at reveal
+        uint128 orderAmount = 200 ether;
+        uint128 insufficientDeposit = 100 ether; // Less than orderAmount
         bytes32 commitmentHash = _computeCommitmentHash(trader1, orderAmount, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, DEPOSIT_AMOUNT, proof); // Only deposit 100 ether
+        hook.commitOrder(poolKey, commitmentHash, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
 
-        // Reveal with amount > deposit
-        vm.expectRevert(abi.encodeWithSelector(Latch__AmountExceedsDeposit.selector, uint256(orderAmount), uint256(DEPOSIT_AMOUNT)));
+        // Reveal with depositAmount < amount
+        vm.expectRevert(abi.encodeWithSelector(Latch__InsufficientDeposit.selector, uint256(orderAmount), uint256(insufficientDeposit)));
         vm.prank(trader1);
-        hook.revealOrder(poolKey, orderAmount, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, orderAmount, LIMIT_PRICE, true, SALT, insufficientDeposit);
     }
 
     function test_revealOrder_allowsPartialAmount() public {
@@ -460,13 +470,13 @@ contract RevealPhaseTest is Test {
         bytes32 commitmentHash = _computeCommitmentHash(trader1, orderAmount, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, commitmentHash, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, commitmentHash, proof);
 
         vm.roll(block.number + COMMIT_DURATION + 1);
 
-        // Should succeed - amount <= deposit
+        // Should succeed - depositAmount >= amount
         vm.prank(trader1);
-        hook.revealOrder(poolKey, orderAmount, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, orderAmount, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
         // Verify reveal slot stored (proof-delegated: amount/price emitted as event, not stored)
         RevealSlot memory slot = hook.getRevealSlot(poolId, 1, trader1);
@@ -481,23 +491,23 @@ contract RevealPhaseTest is Test {
         bytes32 hash1 = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash1, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, hash1, proof);
 
         // Trader2 commits a sell order
         bytes32 salt2 = keccak256("trader2_salt");
         bytes32 hash2 = _computeCommitmentHash(trader2, 80 ether, 950e18, false, salt2);
         vm.prank(trader2);
-        hook.commitOrder(poolKey, hash2, 80 ether, proof);
+        hook.commitOrder(poolKey, hash2, proof);
 
         // Advance to reveal
         vm.roll(block.number + COMMIT_DURATION + 1);
 
-        // Both traders reveal
+        // Both traders reveal (buyers deposit token1, sellers deposit token0)
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
         vm.prank(trader2);
-        hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2);
+        hook.revealOrder(poolKey, 80 ether, 950e18, false, salt2, 80 ether);
 
         // Verify both reveal slots
         RevealSlot memory slot1 = hook.getRevealSlot(poolId, batchId, trader1);
@@ -514,18 +524,22 @@ contract RevealPhaseTest is Test {
     // ============ refundDeposit Tests ============
 
     function test_refundDeposit_success() public {
+        // Set a non-zero commit bond so Path A (PENDING, non-revealer) refunds something
+        uint128 bondAmount = 1 ether;
+        hook.setCommitBondAmount(bondAmount);
+
         uint256 batchId = _setupSettlePhase();
 
         // Check balance before
         uint256 balanceBefore = token1.balanceOf(trader1);
 
-        // Refund deposit (trader1 didn't reveal)
+        // Refund deposit (trader1 didn't reveal — Path A: bond-only refund in token1)
         vm.prank(trader1);
         hook.refundDeposit(poolKey, batchId);
 
-        // Check balance after
+        // Check balance after — should receive bond back in token1
         uint256 balanceAfter = token1.balanceOf(trader1);
-        assertEq(balanceAfter - balanceBefore, DEPOSIT_AMOUNT, "Should receive full refund");
+        assertEq(balanceAfter - balanceBefore, bondAmount, "Should receive bond refund");
 
         // Verify status updated
         (, CommitmentStatus status) = hook.getCommitment(poolId, batchId, trader1);
@@ -533,10 +547,15 @@ contract RevealPhaseTest is Test {
     }
 
     function test_refundDeposit_emitsEvent() public {
+        // Set a non-zero commit bond so the event has meaningful data
+        uint128 bondAmount = 1 ether;
+        hook.setCommitBondAmount(bondAmount);
+
         uint256 batchId = _setupSettlePhase();
 
+        // Path A (PENDING, non-revealer): bondRefund = bondAmount, depositRefund = 0
         vm.expectEmit(true, true, true, true);
-        emit ILatchHookEvents.DepositRefunded(poolId, batchId, trader1, DEPOSIT_AMOUNT);
+        emit ILatchHookEvents.DepositRefunded(poolId, batchId, trader1, bondAmount, 0);
 
         vm.prank(trader1);
         hook.refundDeposit(poolKey, batchId);
@@ -559,7 +578,7 @@ contract RevealPhaseTest is Test {
         bytes32 hash = _computeCommitmentHash(trader1, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader1);
-        hook.commitOrder(poolKey, hash, DEPOSIT_AMOUNT, proof);
+        hook.commitOrder(poolKey, hash, proof);
 
         // Still in COMMIT phase
         vm.expectRevert(abi.encodeWithSelector(Latch__WrongPhase.selector, uint8(BatchPhase.SETTLE), uint8(BatchPhase.COMMIT)));
@@ -590,13 +609,14 @@ contract RevealPhaseTest is Test {
 
         // Reveal the order
         vm.prank(trader1);
-        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT);
+        hook.revealOrder(poolKey, DEPOSIT_AMOUNT, LIMIT_PRICE, true, SALT, DEPOSIT_AMOUNT);
 
-        // Advance to SETTLE
+        // Advance to SETTLE phase
         vm.roll(block.number + REVEAL_DURATION + 1);
 
-        // Try to refund after revealing - should fail
-        vm.expectRevert(Latch__CommitmentAlreadyRevealed.selector);
+        // In SETTLE phase, revealed traders get Latch__SettlePhaseActive()
+        // (they must wait for settle window to expire before refunding)
+        vm.expectRevert(Latch__SettlePhaseActive.selector);
         vm.prank(trader1);
         hook.refundDeposit(poolKey, batchId);
     }
@@ -635,5 +655,5 @@ contract RevealPhaseTest is Test {
 /// @notice Interface with events for expectEmit
 interface ILatchHookEvents {
     event OrderRevealed(PoolId indexed poolId, uint256 indexed batchId, address indexed trader);
-    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount);
+    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint128 bondRefund, uint128 depositRefund);
 }

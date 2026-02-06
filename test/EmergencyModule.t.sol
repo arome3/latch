@@ -52,6 +52,10 @@ contract MockLatchHookForEmergency is ILatchHookMinimal {
     }
     RefundCall[] public refundCalls;
 
+    // Reveal deposit info: hash(poolId, batchId) => trader => (depositAmount, isToken0)
+    mapping(bytes32 => mapping(address => uint128)) internal _revealDepositAmounts;
+    mapping(bytes32 => mapping(address => bool)) internal _revealIsToken0;
+
     function setBatch(PoolId poolId, uint256 batchId, Batch memory batch) external {
         _batches[_key(poolId, batchId)] = batch;
     }
@@ -64,6 +68,12 @@ contract MockLatchHookForEmergency is ILatchHookMinimal {
         _deposits[_traderKey(poolId, batchId)][trader] = amount;
     }
 
+    function setRevealDepositInfo(PoolId poolId, uint256 batchId, address trader, uint128 depositAmount, bool isToken0) external {
+        bytes32 tk = _traderKey(poolId, batchId);
+        _revealDepositAmounts[tk][trader] = depositAmount;
+        _revealIsToken0[tk][trader] = isToken0;
+    }
+
     function getBatch(PoolId poolId, uint256 batchId) external view override returns (Batch memory) {
         return _batches[_key(poolId, batchId)];
     }
@@ -72,8 +82,13 @@ contract MockLatchHookForEmergency is ILatchHookMinimal {
         return _revealed[_traderKey(poolId, batchId)][trader];
     }
 
-    function getCommitmentDeposit(PoolId poolId, uint256 batchId, address trader) external view override returns (uint128) {
+    function getCommitmentBond(PoolId poolId, uint256 batchId, address trader) external view override returns (uint128) {
         return _deposits[_traderKey(poolId, batchId)][trader];
+    }
+
+    function getRevealDepositInfo(PoolId poolId, uint256 batchId, address trader) external view override returns (uint128, bool) {
+        bytes32 tk = _traderKey(poolId, batchId);
+        return (_revealDepositAmounts[tk][trader], _revealIsToken0[tk][trader]);
     }
 
     function executeEmergencyRefund(address currency, address to, uint256 amount) external override {
@@ -478,9 +493,10 @@ contract EmergencyModuleTest is Test {
         _setupActiveBatch(settleEnd);
         _setupBondAndPenalty();
 
-        // Set trader data
+        // Set trader data: bond (token1) + revealed status + commitment status
         mockHook.setRevealed(poolId, batchId, trader1, true);
-        mockHook.setDeposit(poolId, batchId, trader1, 10 ether);
+        mockHook.setDeposit(poolId, batchId, trader1, 10 ether); // bond amount
+        mockHook.setCommitmentStatus(poolId, batchId, trader1, 2); // 2 = REVEALED
 
         // Activate emergency
         vm.roll(settleEnd + emergencyModule.EMERGENCY_TIMEOUT());
@@ -585,22 +601,22 @@ contract EmergencyModuleTest is Test {
     function test_claimEmergencyRefund_revertsNoDeposit() public {
         _setupEmergencyWithDeposit();
 
-        // trader2 has no deposit — not eligible for emergency refund
+        // trader2 has no commitment (status = 0 = NONE) — reverts with CommitmentNotFound
         vm.prank(trader2);
-        vm.expectRevert(Latch__EmergencyRefundNotEligible.selector);
+        vm.expectRevert(Latch__CommitmentNotFound.selector);
         emergencyModule.claimEmergencyRefund(poolKey, batchId);
     }
 
     function test_claimEmergencyRefund_emitsEvent() public {
         _setupEmergencyWithDeposit();
 
-        uint256 deposit = 10 ether;
-        uint256 penalty = deposit * 100 / 10000;
-        uint256 refund = deposit - penalty;
+        uint256 bondAmount = 10 ether;
+        uint256 bondPenalty = bondAmount * 100 / 10000;
+        uint256 bondRefund = bondAmount - bondPenalty;
 
         vm.prank(trader1);
         vm.expectEmit(true, true, true, true);
-        emit EmergencyModule.EmergencyRefundClaimed(poolId, batchId, trader1, refund, penalty);
+        emit EmergencyModule.EmergencyRefundClaimed(poolId, batchId, trader1, bondRefund, bondPenalty);
         emergencyModule.claimEmergencyRefund(poolKey, batchId);
     }
 

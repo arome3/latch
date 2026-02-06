@@ -185,7 +185,8 @@ contract EmergencyModule is Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Claim emergency refund for both revealed and unrevealed traders (Fix #2.2)
-    /// @dev Revealed traders pay 1% penalty; unrevealed traders get full refund
+    /// @dev Unrevealed: refund bond (token1) only. Revealed: refund bond (token1) + trade deposit (correct token).
+    /// @dev Revealed traders pay 1% penalty on bond; unrevealed traders get full bond refund
     /// @dev Calls markEmergencyRefunded to prevent double-refund via refundDeposit()
     function claimEmergencyRefund(PoolKey calldata key, uint256 batchId) external nonReentrant {
         PoolId poolId = key.toId();
@@ -194,32 +195,54 @@ contract EmergencyModule is Ownable2Step, ReentrancyGuard {
         if (penaltyRecipient == address(0)) revert Latch__PenaltyRecipientNotSet();
         if (_emergencyClaimed[poolId][batchId][msg.sender]) revert Latch__EmergencyAlreadyClaimed();
 
-        // Fix #2.2: Check deposit > 0 instead of hasRevealed — covers both revealed and unrevealed
-        uint256 depositAmount = ILatchHookMinimal(latchHook).getCommitmentDeposit(poolId, batchId, msg.sender);
-        if (depositAmount == 0) revert Latch__EmergencyRefundNotEligible();
-
-        // Fix #3.1: Reject already-refunded commitments (prevents double-refund via refundDeposit then emergency)
+        // Reject already-refunded commitments (prevents double-refund via refundDeposit then emergency)
         uint8 status = ILatchHookMinimal(latchHook).getCommitmentStatus(poolId, batchId, msg.sender);
         if (status == 3) revert Latch__CommitmentAlreadyRefunded(); // 3 = REFUNDED
+        if (status == 0) revert Latch__CommitmentNotFound(); // 0 = NONE
 
-        // Branch penalty on hasRevealed: revealed traders pay penalty, unrevealed get full refund
+        // Get bond amount (token1, present for committed traders with non-zero commitBondAmount)
+        uint256 bondAmount = ILatchHookMinimal(latchHook).getCommitmentBond(poolId, batchId, msg.sender);
+
+        // Branch on revealed status
         bool revealed = ILatchHookMinimal(latchHook).hasRevealed(poolId, batchId, msg.sender);
-        uint256 penaltyAmount = revealed ? (depositAmount * EMERGENCY_PENALTY_RATE) / 10000 : 0;
-        uint256 refundAmount = depositAmount - penaltyAmount;
+
+        // Penalty applies to bond only; trade deposit is always returned in full
+        uint256 bondPenalty = revealed ? (bondAmount * EMERGENCY_PENALTY_RATE) / 10000 : 0;
+        uint256 bondRefund = bondAmount - bondPenalty;
 
         _emergencyClaimed[poolId][batchId][msg.sender] = true;
+
+        // Cache trade deposit info BEFORE marking as refunded (markEmergencyRefunded zeros storage)
+        uint128 tradeDeposit;
+        bool isToken0;
+        if (revealed) {
+            (tradeDeposit, isToken0) = ILatchHookMinimal(latchHook)
+                .getRevealDepositInfo(poolId, batchId, msg.sender);
+        }
 
         // Mark commitment as REFUNDED in LatchHook to prevent double-refund via refundDeposit()
         ILatchHookMinimal(latchHook).markEmergencyRefunded(poolId, batchId, msg.sender);
 
-        // Transfer tokens via callback (tokens held by LatchHook, not here)
-        address currencyAddr = Currency.unwrap(key.currency1);
-        ILatchHookMinimal(latchHook).executeEmergencyRefund(currencyAddr, msg.sender, refundAmount);
-        if (penaltyAmount > 0) {
-            ILatchHookMinimal(latchHook).executeEmergencyRefund(currencyAddr, penaltyRecipient, penaltyAmount);
+        // Refund bond in token1
+        address currency1Addr = Currency.unwrap(key.currency1);
+        if (bondRefund > 0) {
+            ILatchHookMinimal(latchHook).executeEmergencyRefund(currency1Addr, msg.sender, bondRefund);
+        }
+        if (bondPenalty > 0) {
+            ILatchHookMinimal(latchHook).executeEmergencyRefund(currency1Addr, penaltyRecipient, bondPenalty);
         }
 
-        emit EmergencyRefundClaimed(poolId, batchId, msg.sender, refundAmount, penaltyAmount);
+        // For revealed traders, also refund trade deposit in correct token (no penalty on trade deposit)
+        if (revealed && tradeDeposit > 0) {
+            address depositCurrencyAddr = isToken0
+                ? Currency.unwrap(key.currency0)
+                : currency1Addr;
+            ILatchHookMinimal(latchHook).executeEmergencyRefund(
+                depositCurrencyAddr, msg.sender, tradeDeposit
+            );
+        }
+
+        emit EmergencyRefundClaimed(poolId, batchId, msg.sender, bondRefund, bondPenalty);
     }
 
     // ============ Bond Functions ============

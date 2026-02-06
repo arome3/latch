@@ -443,7 +443,6 @@ contract EmergencyPauseTest is Test {
         hook.commitOrder{value: 1 ether}(
             poolKey,
             bytes32(uint256(1)),
-            1 ether, // depositAmount
             new bytes32[](1)
         );
     }
@@ -471,7 +470,6 @@ contract EmergencyPauseTest is Test {
         hook.commitOrder{value: 1 ether}(
             poolKey,
             bytes32(uint256(1)),
-            1 ether, // depositAmount
             new bytes32[](1)
         );
     }

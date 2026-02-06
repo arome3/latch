@@ -192,6 +192,29 @@ Transient storage (EIP-1153) saves ~2KB per order. Packed structs reduce storage
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Liquidity Flow Through Phases
+
+Liquidity provision in Latch is structural — baked into the protocol's phase design rather than bolted on as a separate mechanism. Traders and solvers each contribute liquidity at the right moment:
+
+```
+COMMIT PHASE                    REVEAL PHASE                   SETTLE PHASE
+┌──────────────┐               ┌──────────────┐              ┌──────────────┐
+│ Buyer bonds  │               │ Buyer deposits│              │ Solver fills │
+│ token1 ────►│               │ token1 ────► │              │ token0 gap   │
+│ (hides side) │               │ (known side)  │              │ (ZK-verified)│
+│              │               │              │              │              │
+│ Seller bonds │               │ Seller deposits│             │ Matched at   │
+│ token1 ────►│               │ token0 ────► │              │ uniform price│
+└──────────────┘               └──────────────┘              └──────────────┘
+    Privacy layer                 Liquidity layer               Settlement layer
+```
+
+- **Privacy layer**: All traders post identical `token1` bonds — observers cannot distinguish buyers from sellers
+- **Liquidity layer**: Buyers bring `token1` (quote), sellers bring `token0` (base) — the actual trading liquidity is pre-committed by participants themselves
+- **Settlement layer**: Solvers bridge only the net imbalance between buy and sell volume, verified by ZK proof — no passive LP capital required
+
+This eliminates the traditional AMM's information leakage problem: there are no LP positions to analyze, no liquidity curves to predict, and no passive capital exposed to adverse selection.
+
 ---
 
 ## Performance

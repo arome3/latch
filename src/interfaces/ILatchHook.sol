@@ -12,6 +12,7 @@ import {
     ClaimStatus,
     PoolConfig,
     Commitment,
+    RevealDeposit,
     Batch,
     Claimable,
     Order,
@@ -23,7 +24,7 @@ import {
 /// @dev Implements commit-reveal batch auctions with ZK proof settlement
 /// @dev All mutating functions use PoolKey for pool identification
 /// @dev All view functions use PoolId for efficient lookups
-/// @dev Inherits LATCH_HOOK_VERSION, getBatch, hasRevealed, getCommitmentDeposit from ILatchHookMinimal
+/// @dev Inherits LATCH_HOOK_VERSION, getBatch, hasRevealed, getCommitmentBond from ILatchHookMinimal
 interface ILatchHook is ILatchHookMinimal {
     // ============ Events ============
 
@@ -45,13 +46,13 @@ interface ILatchHook is ILatchHookMinimal {
     /// @param batchId The batch identifier
     /// @param trader The trader's address
     /// @param commitmentHash Hash of the committed order parameters
-    /// @param depositAmount Amount deposited as collateral
+    /// @param bondAmount Bond amount deposited in token1
     event OrderCommitted(
         PoolId indexed poolId,
         uint256 indexed batchId,
         address indexed trader,
         bytes32 commitmentHash,
-        uint128 depositAmount
+        uint128 bondAmount
     );
 
     /// @notice Emitted when an order is revealed
@@ -107,12 +108,19 @@ interface ILatchHook is ILatchHookMinimal {
         PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount0, uint128 amount1
     );
 
-    /// @notice Emitted when a deposit is refunded (unrevealed commitment)
+    /// @notice Emitted when a deposit is refunded
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
     /// @param trader The trader's address
-    /// @param amount Amount refunded
-    event DepositRefunded(PoolId indexed poolId, uint256 indexed batchId, address indexed trader, uint128 amount);
+    /// @param bondRefund Bond amount refunded in token1
+    /// @param depositRefund Trade deposit refunded (token0 if seller, token1 if buyer)
+    event DepositRefunded(
+        PoolId indexed poolId,
+        uint256 indexed batchId,
+        address indexed trader,
+        uint128 bondRefund,
+        uint128 depositRefund
+    );
 
     /// @notice Emitted when a batch is finalized
     /// @param poolId The pool identifier
@@ -151,28 +159,35 @@ interface ILatchHook is ILatchHookMinimal {
     function startBatch(PoolKey calldata key) external payable returns (uint256 batchId);
 
     /// @notice Submit a commitment to place an order
-    /// @dev Requires deposit of collateral tokens
+    /// @dev Requires bond payment in token1 (uniform for all traders to preserve privacy)
     /// @dev Must be in COMMIT phase
     /// @param key The pool key identifying the pool
     /// @param commitmentHash Hash of order parameters (amount, price, direction, salt)
-    /// @param depositAmount Amount of collateral to deposit
     /// @param whitelistProof Merkle proof for COMPLIANT mode (empty for PERMISSIONLESS)
     function commitOrder(
         PoolKey calldata key,
         bytes32 commitmentHash,
-        uint128 depositAmount,
         bytes32[] calldata whitelistProof
     ) external payable;
 
-    /// @notice Reveal a previously committed order
+    /// @notice Reveal a previously committed order and deposit trade collateral
     /// @dev Must be in REVEAL phase
     /// @dev Revealed parameters must hash to the stored commitmentHash
+    /// @dev Buyers deposit token1, sellers deposit token0
     /// @param key The pool key identifying the pool
-    /// @param amount Order amount (must not exceed deposit)
+    /// @param amount Order amount
     /// @param limitPrice Limit price for the order
     /// @param isBuy True for buy order, false for sell order
     /// @param salt Random value used in the commitment
-    function revealOrder(PoolKey calldata key, uint128 amount, uint128 limitPrice, bool isBuy, bytes32 salt) external;
+    /// @param depositAmount Amount of trade collateral to deposit
+    function revealOrder(
+        PoolKey calldata key,
+        uint128 amount,
+        uint128 limitPrice,
+        bool isBuy,
+        bytes32 salt,
+        uint128 depositAmount
+    ) external payable;
 
     /// @notice Settle a batch with a ZK proof of correct clearing (proof-delegated)
     /// @dev Must be in SETTLE phase
@@ -318,7 +333,7 @@ interface ILatchHook is ILatchHookMinimal {
         returns (bytes32);
 
     // ============ EmergencyModule Helper Functions ============
-    // hasRevealed and getCommitmentDeposit inherited from ILatchHookMinimal
+    // hasRevealed and getCommitmentBond inherited from ILatchHookMinimal
 
     // ============ Whitelist Snapshot View Functions ============
 
@@ -329,6 +344,21 @@ interface ILatchHook is ILatchHookMinimal {
     function getBatchWhitelistRoot(PoolId poolId, uint256 batchId) external view returns (bytes32);
 
     // ============ Anti-Centralization Functions ============
+
+    /// @notice Set the commit bond amount (admin only)
+    /// @dev Bond is uniform for all traders to preserve commit-phase privacy
+    /// @param _bondAmount The new bond amount in token1
+    function setCommitBondAmount(uint128 _bondAmount) external;
+
+    /// @notice Get a trader's reveal deposit for a batch
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param trader The trader's address
+    /// @return The RevealDeposit struct
+    function getRevealDeposit(PoolId poolId, uint256 batchId, address trader)
+        external
+        view
+        returns (RevealDeposit memory);
 
     /// @notice Force unpause all operations after MAX_PAUSE_DURATION
     /// @dev Callable by anyone — prevents permanent fund freezing by malicious owner

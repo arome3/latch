@@ -22,10 +22,13 @@ contract BatchLifecycleTest is LatchTestBase {
     function setUp() public override {
         super.setUp();
 
-        // Fund 16 extra traders for capacity tests
+        // Fund 16 extra traders for capacity tests (dual-token deposit model)
         for (uint256 i = 0; i < 16; i++) {
             extraTraders[i] = address(uint160(0x3000 + i));
+            token0.mint(extraTraders[i], 1000 ether);
             token1.mint(extraTraders[i], 1000 ether);
+            vm.prank(extraTraders[i]);
+            token0.approve(address(hook), type(uint256).max);
             vm.prank(extraTraders[i]);
             token1.approve(address(hook), type(uint256).max);
         }
@@ -39,24 +42,25 @@ contract BatchLifecycleTest is LatchTestBase {
         // Use 1:1 clearing price so payment = fill (avoids insufficient balance)
         uint128 clearingPrice = 1e18;
 
-        // Record initial balances
-        uint256 trader1Token1Before = token1.balanceOf(trader1);
-
-        // COMMIT — both orders at 1:1 price level
+        // COMMIT — both orders at 1:1 price level (bond=0, no token transfer at commit)
         _commitOrder(trader1, DEFAULT_DEPOSIT, clearingPrice, true, DEFAULT_SALT);
         bytes32 salt2 = keccak256("salt2");
         _commitOrder(trader2, 80 ether, clearingPrice, false, salt2);
 
+        // REVEAL — deposits happen here (token1 for buyers, token0 for sellers)
+        _advancePhase();
+
+        // Record balance before reveal to verify deposit is taken at reveal time
+        uint256 trader1Token1Before = token1.balanceOf(trader1);
+
+        _revealOrder(trader1, DEFAULT_DEPOSIT, clearingPrice, true, DEFAULT_SALT);
+        _revealOrder(trader2, 80 ether, clearingPrice, false, salt2);
+
         assertEq(
             token1.balanceOf(trader1),
             trader1Token1Before - DEFAULT_DEPOSIT,
-            "Deposit should be taken from trader1"
+            "Deposit should be taken from trader1 at reveal"
         );
-
-        // REVEAL
-        _advancePhase();
-        _revealOrder(trader1, DEFAULT_DEPOSIT, clearingPrice, true, DEFAULT_SALT);
-        _revealOrder(trader2, 80 ether, clearingPrice, false, salt2);
 
         // SETTLE
         _advancePhase();
@@ -180,13 +184,15 @@ contract BatchLifecycleTest is LatchTestBase {
         orders[1] = Order({amount: 80 ether, limitPrice: 950e18, trader: trader2, isBuy: false});
         _settleStandard(batchId, orders);
 
-        // trader3 can refund their unrevealed deposit
+        // trader3 can refund their unrevealed order — but with bond=0, non-revealers
+        // only get bond refund (which is 0). No trade deposit was taken at commit time.
         uint256 t3BalBefore = token1.balanceOf(trader3);
         vm.prank(trader3);
         hook.refundDeposit(poolKey, batchId);
         uint256 t3BalAfter = token1.balanceOf(trader3);
 
-        assertEq(t3BalAfter - t3BalBefore, 60 ether, "Unrevealed trader must get full refund");
+        // Bond is 0 in tests (commitBondAmount defaults to 0), so refund is 0
+        assertEq(t3BalAfter - t3BalBefore, 0, "Unrevealed trader gets bond refund only (0 when bond=0)");
     }
 
     // ============ Test 4: Zero-match settlement ============
@@ -229,13 +235,15 @@ contract BatchLifecycleTest is LatchTestBase {
         (Claimable memory c1,) = hook.getClaimable(poolId, batchId, trader1);
         (Claimable memory c2,) = hook.getClaimable(poolId, batchId, trader2);
 
-        // Buyer: no token0, gets deposit refund in token1
+        // Buyer: no fill → no token0, gets bond(0) + deposit(50e18) - payment(0) = 50e18 token1
         assertEq(c1.amount0, 0, "No fill means no token0 for buyer");
-        assertEq(c1.amount1, 50 ether, "Buyer gets full deposit refund");
+        assertEq(c1.amount1, 50 ether, "Buyer gets full deposit refund in token1");
 
-        // Seller: no payment, gets deposit refund in token1
-        assertEq(c2.amount0, 0, "No token0 for seller");
-        assertEq(c2.amount1, 50 ether, "Seller gets full deposit refund");
+        // Seller: deposited token0 at reveal, fill=0 → gets back full token0 deposit
+        // token0 = deposit(50e18) - fill(0) = 50e18
+        // token1 = payment(0) + bond(0) = 0
+        assertEq(c2.amount0, 50 ether, "Seller gets full token0 deposit back (unfilled)");
+        assertEq(c2.amount1, 0, "Seller gets no token1 (no payment, no bond)");
     }
 
     // ============ Test 5: MAX_ORDERS capacity ============
@@ -253,18 +261,21 @@ contract BatchLifecycleTest is LatchTestBase {
 
             bytes32 hash = _computeCommitmentHash(trader, 10 ether, price, isBuy, salt);
             vm.prank(trader);
-            hook.commitOrder(poolKey, hash, 10 ether, emptyProof);
+            hook.commitOrder(poolKey, hash, emptyProof);
         }
 
         // 17th order should revert with Latch__BatchFull
         address extraTrader = address(uint160(0x4000));
+        token0.mint(extraTrader, 1000 ether);
         token1.mint(extraTrader, 1000 ether);
+        vm.prank(extraTrader);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(extraTrader);
         token1.approve(address(hook), type(uint256).max);
 
         bytes32 extraHash = _computeCommitmentHash(extraTrader, 10 ether, 1000e18, true, keccak256("extra"));
         vm.prank(extraTrader);
         vm.expectRevert(Latch__BatchFull.selector);
-        hook.commitOrder(poolKey, extraHash, 10 ether, emptyProof);
+        hook.commitOrder(poolKey, extraHash, emptyProof);
     }
 }

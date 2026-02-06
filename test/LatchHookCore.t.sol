@@ -591,12 +591,12 @@ contract LatchHookCoreTest is Test {
         // commitOrder is now implemented - it validates inputs
         bytes32[] memory proof = new bytes32[](0);
         vm.expectRevert(Latch__ZeroCommitmentHash.selector);
-        hook.commitOrder(poolKey, bytes32(0), 0, proof);
+        hook.commitOrder(poolKey, bytes32(0), proof);
     }
 
     function test_revealOrder_revertsOnNoBatch() public {
         vm.expectRevert(Latch__NoBatchActive.selector);
-        hook.revealOrder(poolKey, 0, 0, false, bytes32(0));
+        hook.revealOrder(poolKey, 0, 0, false, bytes32(0), 0);
     }
 
     function test_settleBatch_revertsOnNoBatch() public {

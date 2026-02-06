@@ -26,12 +26,12 @@ interface ILatchHookMinimal {
     /// @return True if trader has revealed
     function hasRevealed(PoolId poolId, uint256 batchId, address trader) external view returns (bool);
 
-    /// @notice Get commitment deposit amount for a trader
+    /// @notice Get commitment bond amount for a trader
     /// @param poolId The pool identifier
     /// @param batchId The batch identifier
     /// @param trader The trader address
-    /// @return The deposit amount
-    function getCommitmentDeposit(PoolId poolId, uint256 batchId, address trader) external view returns (uint128);
+    /// @return The bond amount
+    function getCommitmentBond(PoolId poolId, uint256 batchId, address trader) external view returns (uint128);
 
     /// @notice Execute an emergency refund transfer from LatchHook to a recipient
     /// @dev Only callable by the EmergencyModule via callback pattern
@@ -53,4 +53,16 @@ interface ILatchHookMinimal {
     /// @param trader The trader address
     /// @return status The commitment status (0=NONE, 1=PENDING, 2=REVEALED, 3=REFUNDED)
     function getCommitmentStatus(PoolId poolId, uint256 batchId, address trader) external view returns (uint8 status);
+
+    /// @notice Get reveal deposit info for a trader (amount and which token)
+    /// @dev Used by EmergencyModule for dual-token emergency refunds
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param trader The trader address
+    /// @return depositAmount The trade deposit amount
+    /// @return isToken0 True if deposited token0 (seller), false if token1 (buyer)
+    function getRevealDepositInfo(PoolId poolId, uint256 batchId, address trader)
+        external
+        view
+        returns (uint128 depositAmount, bool isToken0);
 }

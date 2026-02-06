@@ -243,7 +243,8 @@ library HookMiner {
             salt = bytes32(i);
             hookAddress = computeAddress(deployer, salt, initCodeHash);
 
-            if (uint160(hookAddress) & flags == flags) {
+            // Exact match: required flags set AND no extra flags (ALL_HOOK_MASK = 0x3FFF)
+            if ((uint160(hookAddress) & uint160(0x3FFF)) == flags) {
                 return (hookAddress, salt);
             }
         }

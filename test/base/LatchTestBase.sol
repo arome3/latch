@@ -112,14 +112,25 @@ abstract contract LatchTestBase is Test {
     // ============ Funding Helpers ============
 
     function _fundTraders() internal virtual {
+        // Fund with both token0 and token1 (dual-token deposit model)
+        token0.mint(trader1, 1000 ether);
+        token0.mint(trader2, 1000 ether);
+        token0.mint(trader3, 1000 ether);
         token1.mint(trader1, 1000 ether);
         token1.mint(trader2, 1000 ether);
         token1.mint(trader3, 1000 ether);
 
+        // Approve both tokens for all traders
+        vm.prank(trader1);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader1);
         token1.approve(address(hook), type(uint256).max);
         vm.prank(trader2);
+        token0.approve(address(hook), type(uint256).max);
+        vm.prank(trader2);
         token1.approve(address(hook), type(uint256).max);
+        vm.prank(trader3);
+        token0.approve(address(hook), type(uint256).max);
         vm.prank(trader3);
         token1.approve(address(hook), type(uint256).max);
 
@@ -235,7 +246,7 @@ abstract contract LatchTestBase is Test {
         batchId = hook.startBatch(poolKey);
     }
 
-    /// @notice Commit a single order for a trader
+    /// @notice Commit a single order for a trader (bond-only at commit time)
     function _commitOrder(
         address trader,
         uint128 amount,
@@ -246,10 +257,11 @@ abstract contract LatchTestBase is Test {
         bytes32 hash = _computeCommitmentHash(trader, amount, limitPrice, isBuy, salt);
         bytes32[] memory proof = new bytes32[](0);
         vm.prank(trader);
-        hook.commitOrder(poolKey, hash, amount, proof);
+        hook.commitOrder(poolKey, hash, proof);
     }
 
-    /// @notice Reveal a single order for a trader
+    /// @notice Reveal a single order for a trader (deposit at reveal time)
+    /// @dev Deposit amount defaults to order amount
     function _revealOrder(
         address trader,
         uint128 amount,
@@ -257,8 +269,20 @@ abstract contract LatchTestBase is Test {
         bool isBuy,
         bytes32 salt
     ) internal {
+        _revealOrderWithDeposit(trader, amount, limitPrice, isBuy, salt, amount);
+    }
+
+    /// @notice Reveal a single order with explicit deposit amount
+    function _revealOrderWithDeposit(
+        address trader,
+        uint128 amount,
+        uint128 limitPrice,
+        bool isBuy,
+        bytes32 salt,
+        uint128 depositAmount
+    ) internal {
         vm.prank(trader);
-        hook.revealOrder(poolKey, amount, limitPrice, isBuy, salt);
+        hook.revealOrder(poolKey, amount, limitPrice, isBuy, salt, depositAmount);
     }
 
     /// @notice Advance to next phase by rolling past the current phase's end block
