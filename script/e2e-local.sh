@@ -99,13 +99,17 @@ echo "  Phase boundaries: commit=[${START_BLOCK}, $((START_BLOCK + 5))], reveal=
 # ═══════════════════════════════════════════════════════════
 echo -e "${CYAN}--- Step 3: Commit Orders ---${NC}"
 
-BUYER_AMOUNT="100000000000000000000"   # 100e18
-BUYER_LIMIT="1000000000000000000"      # 1e18 (1.0 token1/token0 max willingness)
+# Order amounts and prices — realistic ETH/USDC demo values
+BUYER_AMOUNT="1000000000000000000"          # 1e18 = 1 WETH
+BUYER_LIMIT="2600000000000000000000"        # 2600e18 ($2,600/WETH — buyer's max price)
+BUYER_DEPOSIT="2600000000000000000000"      # 2600e18 USDC (covers full limit price)
 BUYER_SALT="0x0000000000000000000000000000000000000000000000000000000000000001"
 
-SELLER_AMOUNT="100000000000000000000"  # 100e18
-SELLER_LIMIT="900000000000000000"      # 0.9e18 (0.9 token1/token0 min acceptance)
+SELLER_AMOUNT="1000000000000000000"         # 1e18 = 1 WETH
+SELLER_LIMIT="2500000000000000000000"       # 2500e18 ($2,500/WETH — seller's min price)
+SELLER_DEPOSIT="1000000000000000000"        # 1e18 WETH (the WETH being sold)
 SELLER_SALT="0x0000000000000000000000000000000000000000000000000000000000000002"
+# Expected clearing: $2,500/WETH — buyer pays 2500 USDC, gets ~100 USDC refund
 
 # Compute commitment hashes (read-only calls, no blocks mined)
 BUYER_COMMIT=$(cast call "$HOOK" \
@@ -143,25 +147,25 @@ echo -e "${CYAN}--- Step 4: Reveal Orders ---${NC}"
 # commitEnd = startBlock + 5. Mine enough to ensure we're past commitEnd.
 mine_blocks 4
 
-# Approve deposits for reveal: buyer deposits token1, seller deposits token0
-cast send "$TOKEN1" "approve(address,uint256)" "$HOOK" "$BUYER_AMOUNT" \
+# Approve deposits for reveal: buyer deposits token1 (USDC), seller deposits token0 (WETH)
+cast send "$TOKEN1" "approve(address,uint256)" "$HOOK" "$BUYER_DEPOSIT" \
     --private-key "$BUYER_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-cast send "$TOKEN0" "approve(address,uint256)" "$HOOK" "$SELLER_AMOUNT" \
+cast send "$TOKEN0" "approve(address,uint256)" "$HOOK" "$SELLER_DEPOSIT" \
     --private-key "$SELLER_KEY" --rpc-url "$RPC" > /dev/null 2>&1
 echo -e "  ${GREEN}Deposits approved (buyer=token1, seller=token0)${NC}"
 
 # Reveal orders with depositAmount (new signature includes depositAmount at end)
 cast send "$HOOK" \
     "revealOrder((address,address,uint24,int24,address),uint128,uint128,bool,bytes32,uint128)" \
-    "$POOL_KEY" "$BUYER_AMOUNT" "$BUYER_LIMIT" "true" "$BUYER_SALT" "$BUYER_AMOUNT" \
+    "$POOL_KEY" "$BUYER_AMOUNT" "$BUYER_LIMIT" "true" "$BUYER_SALT" "$BUYER_DEPOSIT" \
     --private-key "$BUYER_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-echo -e "${GREEN}  Buyer revealed (deposited $BUYER_AMOUNT token1)${NC}"
+echo -e "${GREEN}  Buyer revealed (deposited $BUYER_DEPOSIT token1 / USDC)${NC}"
 
 cast send "$HOOK" \
     "revealOrder((address,address,uint24,int24,address),uint128,uint128,bool,bytes32,uint128)" \
-    "$POOL_KEY" "$SELLER_AMOUNT" "$SELLER_LIMIT" "false" "$SELLER_SALT" "$SELLER_AMOUNT" \
+    "$POOL_KEY" "$SELLER_AMOUNT" "$SELLER_LIMIT" "false" "$SELLER_SALT" "$SELLER_DEPOSIT" \
     --private-key "$SELLER_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-echo -e "${GREEN}  Seller revealed (deposited $SELLER_AMOUNT token0)${NC}"
+echo -e "${GREEN}  Seller revealed (deposited $SELLER_DEPOSIT token0 / WETH)${NC}"
 echo -e "  Block $(cast block-number --rpc-url "$RPC")"
 
 # ═══════════════════════════════════════════════════════════

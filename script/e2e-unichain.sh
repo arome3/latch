@@ -134,34 +134,34 @@ fi
 # Step 2: Mint WETH + USDC to buyer, seller, solver
 # ═══════════════════════════════════════════════════════════
 echo -e "${CYAN}--- Step 2: Mint Tokens ---${NC}"
-WETH_MINT="1000000000000000000000"  # 1000e18 (18 decimals)
-USDC_MINT="1000000000"              # 1000e6  (6 decimals)
+WETH_MINT="100000000000000000000"     # 100e18  WETH (plenty of buffer)
+USDC_MINT="10000000000000000000000"   # 10000e18 USDC (covers 2600 deposit + margin)
 
-BUYER_WETH_BAL=$(cast call "$WETH" "balanceOf(address)(uint256)" "$BUYER_ADDR" --rpc-url "$RPC")
-if [ "$BUYER_WETH_BAL" = "0" ]; then
-    echo "  Minting WETH + USDC to buyer, seller, solver..."
-    cast send "$WETH" "mint(address,uint256)" "$BUYER_ADDR" "$WETH_MINT" \
-        --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-    cast send "$USDC" "mint(address,uint256)" "$BUYER_ADDR" "$USDC_MINT" \
-        --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-    cast send "$WETH" "mint(address,uint256)" "$SELLER_ADDR" "$WETH_MINT" \
-        --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-    cast send "$USDC" "mint(address,uint256)" "$SELLER_ADDR" "$USDC_MINT" \
-        --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-    # Mint to solver too (needs token0 liquidity for settlement)
-    if [ -n "${SOLVER_PRIVATE_KEY:-}" ]; then
-        SOLVER_ADDR_MINT=$(cast wallet address "$SOLVER_PRIVATE_KEY")
-        cast send "$WETH" "mint(address,uint256)" "$SOLVER_ADDR_MINT" "$WETH_MINT" \
-            --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-        cast send "$USDC" "mint(address,uint256)" "$SOLVER_ADDR_MINT" "$USDC_MINT" \
-            --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-        echo -e "${GREEN}  Minted 1000 WETH + 1000 USDC to buyer, seller, solver${NC}"
-    else
-        echo -e "${GREEN}  Minted 1000 WETH + 1000 USDC to buyer and seller${NC}"
-    fi
-else
-    echo -e "${GREEN}  Buyer already has WETH (balance: $BUYER_WETH_BAL) — skipping mints${NC}"
+# Mint with 2s delays between each tx to avoid OP Stack nonce races
+echo "  Minting WETH + USDC to buyer, seller..."
+cast send "$WETH" "mint(address,uint256)" "$BUYER_ADDR" "$WETH_MINT" \
+    --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash' || true
+sleep 2
+cast send "$USDC" "mint(address,uint256)" "$BUYER_ADDR" "$USDC_MINT" \
+    --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash' || true
+sleep 2
+cast send "$WETH" "mint(address,uint256)" "$SELLER_ADDR" "$WETH_MINT" \
+    --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash' || true
+sleep 2
+cast send "$USDC" "mint(address,uint256)" "$SELLER_ADDR" "$USDC_MINT" \
+    --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash' || true
+if [ -n "${SOLVER_PRIVATE_KEY:-}" ]; then
+    SOLVER_ADDR_MINT=$(cast wallet address "$SOLVER_PRIVATE_KEY")
+    sleep 2
+    cast send "$WETH" "mint(address,uint256)" "$SOLVER_ADDR_MINT" "$WETH_MINT" \
+        --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash' || true
+    sleep 2
+    cast send "$USDC" "mint(address,uint256)" "$SOLVER_ADDR_MINT" "$USDC_MINT" \
+        --private-key "$DEPLOYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash' || true
 fi
+echo -e "${GREEN}  Minted tokens to all participants${NC}"
+# Brief pause to let OP Stack L2 nonce settle after rapid mints
+sleep 3
 
 # ═══════════════════════════════════════════════════════════
 # Step 3: Start Batch
@@ -185,14 +185,17 @@ explorer_link "$TX"
 # ═══════════════════════════════════════════════════════════
 echo -e "${CYAN}--- Step 4: Commit Orders ---${NC}"
 
-# Amounts in token0 (USDC, 6 dec) raw units
-BUYER_AMOUNT="100000000"               # 100e6 = 100 USDC
-BUYER_LIMIT="1000000000000000000"      # 1e18 (price ratio: token1 per token0)
+# Order amounts and prices — realistic ETH/USDC demo values
+BUYER_AMOUNT="1000000000000000000"          # 1e18 = 1 WETH
+BUYER_LIMIT="2600000000000000000000"        # 2600e18 ($2,600/WETH — buyer's max price)
+BUYER_DEPOSIT="2600000000000000000000"      # 2600e18 USDC (covers full limit price)
 BUYER_SALT="0x0000000000000000000000000000000000000000000000000000000000000001"
 
-SELLER_AMOUNT="100000000"              # 100e6 = 100 USDC
-SELLER_LIMIT="900000000000000000"      # 0.9e18 (price ratio)
+SELLER_AMOUNT="1000000000000000000"         # 1e18 = 1 WETH
+SELLER_LIMIT="2500000000000000000000"       # 2500e18 ($2,500/WETH — seller's min price)
+SELLER_DEPOSIT="1000000000000000000"        # 1e18 WETH (the WETH being sold)
 SELLER_SALT="0x0000000000000000000000000000000000000000000000000000000000000002"
+# Expected clearing: $2,500/WETH — buyer pays 2500 USDC, gets ~100 USDC refund
 
 BUYER_COMMIT=$(cast call "$HOOK" \
     "computeCommitmentHash(address,uint128,uint128,bool,bytes32)(bytes32)" \
@@ -226,9 +229,11 @@ explorer_link "$TX"
 echo -e "${CYAN}--- Step 5: Reveal Orders ---${NC}"
 
 # Pre-approve deposits during COMMIT phase (ERC20 approvals are phase-independent)
-cast send "$TOKEN1" "approve(address,uint256)" "$HOOK" "$BUYER_AMOUNT" \
+# Buyer approves token1 (USDC) for deposit — must cover full limit price
+cast send "$TOKEN1" "approve(address,uint256)" "$HOOK" "$BUYER_DEPOSIT" \
     --private-key "$BUYER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
-cast send "$TOKEN0" "approve(address,uint256)" "$HOOK" "$SELLER_AMOUNT" \
+# Seller approves token0 (WETH) for deposit — the WETH being sold
+cast send "$TOKEN0" "approve(address,uint256)" "$HOOK" "$SELLER_DEPOSIT" \
     --private-key "$SELLER_PRIVATE_KEY" --rpc-url "$RPC" > /dev/null 2>&1
 echo -e "  ${GREEN}Deposits pre-approved${NC}"
 
@@ -237,14 +242,14 @@ wait_blocks 20 "commit phase ending"
 
 TX=$(cast send "$HOOK" \
     "revealOrder((address,address,uint24,int24,address),uint128,uint128,bool,bytes32,uint128)" \
-    "$POOL_KEY" "$BUYER_AMOUNT" "$BUYER_LIMIT" "true" "$BUYER_SALT" "$BUYER_AMOUNT" \
+    "$POOL_KEY" "$BUYER_AMOUNT" "$BUYER_LIMIT" "true" "$BUYER_SALT" "$BUYER_DEPOSIT" \
     --private-key "$BUYER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash')
 echo -e "${GREEN}  Buyer revealed${NC}"
 explorer_link "$TX"
 
 TX=$(cast send "$HOOK" \
     "revealOrder((address,address,uint24,int24,address),uint128,uint128,bool,bytes32,uint128)" \
-    "$POOL_KEY" "$SELLER_AMOUNT" "$SELLER_LIMIT" "false" "$SELLER_SALT" "$SELLER_AMOUNT" \
+    "$POOL_KEY" "$SELLER_AMOUNT" "$SELLER_LIMIT" "false" "$SELLER_SALT" "$SELLER_DEPOSIT" \
     --private-key "$SELLER_PRIVATE_KEY" --rpc-url "$RPC" --json | jq -r '.transactionHash')
 echo -e "${GREEN}  Seller revealed${NC}"
 explorer_link "$TX"

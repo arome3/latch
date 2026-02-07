@@ -3,6 +3,7 @@
   <img src="https://img.shields.io/badge/ZK%20Proofs-Noir-5C2D91?style=for-the-badge" alt="Noir"/>
   <img src="https://img.shields.io/badge/Solidity-0.8.27-363636?style=for-the-badge&logo=solidity" alt="Solidity"/>
   <img src="https://img.shields.io/badge/EVM-Cancun-3C3C3D?style=for-the-badge&logo=ethereum" alt="Cancun"/>
+  <img src="https://img.shields.io/badge/Next.js-14-000000?style=for-the-badge&logo=nextdotjs&logoColor=white" alt="Next.js"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"/>
 </p>
 
@@ -246,6 +247,40 @@ This eliminates the traditional AMM's information leakage problem: there are no 
 
 ---
 
+## Frontend Dashboard
+
+A real-time dashboard built with the **Frosted Obsidian** theme that visualizes the batch auction lifecycle.
+
+```
+cd frontend && npm install && npm run dev    # http://localhost:3000
+```
+
+### Privacy Visualization
+
+The UI's signature feature is a frosted-glass overlay on the "What Chain Sees" panel that dissolves as the batch progresses — making the protocol's commit-reveal privacy directly visible:
+
+| Phase | Overlay | Badge |
+|-------|---------|-------|
+| **COMMIT** | `backdrop-blur(12px)` — fully obscured | Gold **ENCRYPTED** |
+| **REVEAL** | `backdrop-blur(6px)` — partially visible | Gold **REVEALING** |
+| **SETTLE** | `backdrop-blur(3px)` — mostly clear | Gold **PROVING...** |
+| **SETTLED** | No blur — fully transparent | Green **ZK VERIFIED** |
+
+### Features
+
+- **Real-time chain polling** — block-by-block state updates via `useBlockNumber({ watch: true })`
+- **Chained approve + reveal** — single-click flow with step indicator ("Approving 1/2..." → "Revealing 2/2...")
+- **Batch Summary** — post-settlement view showing clearing price, volumes, per-user claimable amounts, and claim status
+- **Toast notifications** — transaction confirmations, errors, and pending states
+- **Dual-network support** — Unichain Sepolia (1301) and local Anvil (31337)
+- **RainbowKit wallet connection** with dark theme
+
+### Stack
+
+Next.js 14 · React 18 · Tailwind CSS · wagmi v2 · viem · RainbowKit 2 · Geist font
+
+---
+
 ## Performance
 
 | Metric | Value | Notes |
@@ -284,21 +319,19 @@ This eliminates the traditional AMM's information leakage problem: there are no 
 **Pool ID:** `0x892a1df7c32af699f5ecabf6347194b65f6d9761f14635a2e8b4bd28c215795a`
 **PoolManager:** [`0x00B036B58a818B1BC34d502D3fE730Db729e62AC`](https://sepolia.uniscan.xyz/address/0x00B036B58a818B1BC34d502D3fE730Db729e62AC) (Uniswap v4)
 
-### Verified E2E Transaction IDs (Batch #2)
+### Verified E2E Transaction IDs (Batch #6 — 1 WETH @ $2,500)
 
-A complete batch auction lifecycle executed on Unichain Sepolia:
+A complete batch auction lifecycle on Unichain Sepolia with realistic ETH/USDC pricing:
 
 | Step | Transaction |
 |------|-------------|
-| Start Batch | [`0x144f5691...`](https://sepolia.uniscan.xyz/tx/0x144f569104d13cdfe28da6820aa9a7b9ec26567ace60557802c766b30060138f) |
-| Buyer Commit (blinded) | [`0x71492191...`](https://sepolia.uniscan.xyz/tx/0x714921910eb7d249260d760f5ad807265156c8b986b5cbf9fbf058710ee48b80) |
-| Seller Commit (blinded) | [`0x65f5c2da...`](https://sepolia.uniscan.xyz/tx/0x65f5c2daa0e41b790f8e70f289836449aeae0061388c0b6463bb417dca175474) |
-| Buyer Reveal | [`0xe8adc67f...`](https://sepolia.uniscan.xyz/tx/0xe8adc67f98dc20427d1b86817ab3d5d702ef45460230a1c67a47da2533945bfb) |
-| Seller Reveal | [`0x16ea645a...`](https://sepolia.uniscan.xyz/tx/0x16ea645a651bc0c36509061c08b831a3c789b98a9b99951dac753a9b0b735c6c) |
-| ZK Settlement (2.98M gas) | [`0xaf48f2be...`](https://sepolia.uniscan.xyz/tx/0xaf48f2be46f5880f032bfe3b2d07767830a3ce6ef3fa51ee69cbd29f00ed7016) |
-| Buyer Claim | [`0xb04e0128...`](https://sepolia.uniscan.xyz/tx/0xb04e01288b999737fd58509266f205b6f6c94c8289ab6ab5862739b5a53ee8a4) |
-| Seller Claim | [`0xc76d0f61...`](https://sepolia.uniscan.xyz/tx/0xc76d0f61c6f196f2857f1b40c425edad44e56c57a235845fe57e5d63aa3cff9e) |
-| Solver Reward Claim | [`0x3cd40957...`](https://sepolia.uniscan.xyz/tx/0x3cd40957d547e08a88442b43a11ef58f2d766f0cf5282d3d4299403471b99ccc) |
+| Start Batch | [`0xaaab1d2b...`](https://sepolia.uniscan.xyz/tx/0xaaab1d2bc9e07d0ea979190a18f6499ab931bc8f065350a70d2d02004279b64f) |
+| Buyer Commit (blinded) | [`0x1605f3ae...`](https://sepolia.uniscan.xyz/tx/0x1605f3ae6ace02a31edcff7b9a78b94a8a74a93237182dd1b4b29e7afbc14aad) |
+| Seller Commit (blinded) | [`0xba3d27cb...`](https://sepolia.uniscan.xyz/tx/0xba3d27cbd2b5f3fb926eeb1f5f0e44ac119c6c24f91c3e9d77d9050831c3e548) |
+| Buyer Reveal (1 WETH, limit $2,600) | [`0xd41c552a...`](https://sepolia.uniscan.xyz/tx/0xd41c552a60b6d8ce809177c3563dd8f77c2febe13d28781b259d5ff3624437ee) |
+| Seller Reveal (1 WETH, limit $2,500) | [`0x478e22ab...`](https://sepolia.uniscan.xyz/tx/0x478e22ab6150c30e6e48ca275d007b56041bfad5fe5dfd5e4c7c527fe22d7405) |
+| Buyer Claim (+1 WETH, +99.997 USDC refund) | [`0xf81e1fd3...`](https://sepolia.uniscan.xyz/tx/0xf81e1fd3a97e29430155ed6c71dd22c9d37373a33c86663b78408e1e0597d50d) |
+| Seller Claim (+2,500 USDC) | [`0x7cfdd75a...`](https://sepolia.uniscan.xyz/tx/0x7cfdd75a5da8b0af1c2400c3023055c3a740c173c33d21aface3c863d5ddb9ef) |
 
 ---
 
@@ -342,12 +375,15 @@ make deploy-full-local
 ./script/setup-solver.sh 31337
 cd solver && npm install && npm run dev
 
-# 5. Run the E2E lifecycle (Terminal 3)
+# 5. Start the frontend (Terminal 3)
+cd frontend && npm install && npm run dev   # → http://localhost:3000
+
+# 6. Run the E2E lifecycle (Terminal 4)
 #    startBatch → commit → reveal → [solver auto-settles with ZK proof] → claim
 bash script/e2e-local.sh
 ```
 
-You'll see the solver detect the batch, generate a ZK proof (~5s), and submit the settlement transaction. Both buyer and seller then claim their tokens.
+You'll see the solver detect the batch, generate a ZK proof (~5s), and submit the settlement transaction. The frontend updates in real-time as phases progress — the frosted overlay dissolves and the "ZK VERIFIED" badge appears on settlement. Both buyer and seller then claim their tokens.
 
 ### Option B: Unichain Sepolia (Real L2) — 10 minutes
 
@@ -375,7 +411,10 @@ export SOLVER_PRIVATE_KEY="0x..."        # solver wallet
 ./script/setup-solver.sh 1301
 cd solver && npm install && npm run dev
 
-# 5. Run the E2E lifecycle (Terminal 2)
+# 5. Start the frontend (Terminal 2)
+cd frontend && npm install && npm run dev   # → http://localhost:3000
+
+# 6. Run the E2E lifecycle (Terminal 3)
 bash script/e2e-unichain.sh
 ```
 
@@ -397,6 +436,8 @@ Get Unichain Sepolia ETH from the [Unichain Faucet](https://faucet.unichain.org)
 | `make deploy-unichain-sepolia` | Deploy to Unichain Sepolia |
 | `make solver-setup` | Generate solver .env from deployment |
 | `make solver-start` | Start the solver |
+| `cd frontend && npm run dev` | Start frontend dashboard (localhost:3000) |
+| `cd frontend && npm run build` | Production build of frontend |
 | `make help` | Show all available targets |
 
 ---
@@ -483,6 +524,26 @@ latch/
 │       ├── Constants.sol
 │       └── Errors.sol
 │
+├── frontend/                     # Next.js dashboard (Frosted Obsidian theme)
+│   ├── app/
+│   │   ├── layout.tsx            # Root layout + Web3Provider
+│   │   ├── page.tsx              # Main dashboard page
+│   │   └── globals.css           # Theme: obsidian, zk-green, latch-gold
+│   ├── components/
+│   │   ├── OrderPanel.tsx        # Order form + "What Chain Sees" frost panel
+│   │   ├── BatchPhaseBar.tsx     # 4-phase progress bar
+│   │   ├── BatchActivity.tsx     # Live order feed (uniform → revealed)
+│   │   ├── Header.tsx            # Logo + wallet connect
+│   │   └── Toast.tsx             # Transaction notification system
+│   ├── hooks/
+│   │   ├── useBatchState.ts      # Real-time chain polling (multicall per block)
+│   │   └── useOrderFlow.ts       # Commit/reveal/claim transaction flows
+│   ├── lib/
+│   │   ├── contracts.ts          # ABIs, addresses, helpers
+│   │   └── config.ts             # Chain + wagmi configuration
+│   └── providers/
+│       └── Web3Provider.tsx      # wagmi + RainbowKit + QueryClient
+│
 ├── circuits/                     # Noir ZK circuits
 │   ├── src/
 │   │   ├── main.nr               # Circuit entry point
@@ -492,12 +553,14 @@ latch/
 │   │   └── fees.nr               # Fee computation
 │   └── Nargo.toml
 │
-├── scripts/                      # TypeScript tooling
-│   └── prover/                   # @latch/prover package
-│       ├── src/
-│       │   ├── prover.ts         # Proof generation
-│       │   └── format-inputs.ts  # Input formatting
-│       └── package.json
+├── solver/                       # TypeScript auto-solver
+│   └── src/
+│       ├── index.ts              # Watcher loop + settlement orchestration
+│       ├── chain/                # On-chain reads (eth_call only, OP Stack safe)
+│       │   └── contracts.ts      # ABIs + contract interactions
+│       └── engine/               # Clearing price + Merkle tree computation
+│           ├── clearing.ts       # Supply/demand intersection
+│           └── merkle.ts         # Poseidon Merkle tree (circomlibjs)
 │
 ├── test/                         # Comprehensive test suite
 │   ├── CommitPhase.t.sol
@@ -521,7 +584,8 @@ latch/
 | **ZK Circuits** | Noir 1.0.0-beta.15 | Developer-friendly ZK DSL |
 | **Proving Backend** | Barretenberg | Fast UltraHonk proofs |
 | **Testing** | Foundry | Industry-standard Solidity testing |
-| **Prover SDK** | TypeScript | Easy integration for solvers |
+| **Solver** | TypeScript + circomlibjs | Auto-settlement with real ZK proofs |
+| **Frontend** | Next.js 14 + wagmi v2 + RainbowKit | Real-time dashboard with privacy visualization |
 | **Target EVM** | Cancun | TSTORE/TLOAD opcodes |
 
 ---
@@ -552,6 +616,7 @@ latch/
 - [x] Testnet deployment (Unichain Sepolia, OP Stack L2)
 - [x] Solver incentive mechanism (SolverRewards)
 - [x] Full E2E verified on Unichain Sepolia (commit -> reveal -> ZK settle -> claim)
+- [x] Frontend dashboard with real-time chain state and privacy visualization
 - [ ] Mainnet deployment
 - [ ] Multi-pool batching (cross-pool MEV protection)
 - [ ] SDK for wallet integration

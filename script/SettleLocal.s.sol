@@ -42,18 +42,18 @@ contract SettleLocal is Script {
         uint256 batchId = hook.getCurrentBatchId(poolId);
         console2.log("Batch ID:", batchId);
 
-        // Order parameters (matching the E2E script)
+        // Order parameters (matching the E2E script — realistic ETH/USDC values)
         address buyer = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;  // Anvil #1
         address seller = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC; // Anvil #2
-        uint128 buyerAmount = 100e18;
-        uint128 sellerAmount = 100e18;
-        uint128 buyerLimit = 1e18;    // 1.0 token1/token0 (max buyer willingness)
-        uint128 sellerLimit = 0.9e18; // 0.9 token1/token0 (min seller acceptance)
+        uint128 buyerAmount = 1e18;       // 1 WETH
+        uint128 sellerAmount = 1e18;      // 1 WETH
+        uint128 buyerLimit = 2600e18;     // $2,600/WETH (buyer's max price)
+        uint128 sellerLimit = 2500e18;    // $2,500/WETH (seller's min price)
 
-        // Clearing price: 0.9e18 (maximizes matched volume, tie-break to min)
+        // Clearing price: 2500e18 ($2,500/WETH — seller's minimum, maximizes matched volume)
         // Price represents token1-per-token0 ratio scaled by PRICE_PRECISION (1e18)
-        // payment = (fill * clearingPrice) / PRICE_PRECISION = (100e18 * 0.9e18) / 1e18 = 90e18
-        uint128 clearingPrice = 0.9e18;
+        // payment = (fill * clearingPrice) / PRICE_PRECISION = (1e18 * 2500e18) / 1e18 = 2500e18
+        uint128 clearingPrice = 2500e18;
         uint256 buyVolume = buyerAmount;
         uint256 sellVolume = sellerAmount;
         uint256 matchedVolume = buyVolume < sellVolume ? buyVolume : sellVolume;
@@ -94,7 +94,7 @@ contract SettleLocal is Script {
 
         // Approve token0 for the hook (solver provides net buy-side liquidity)
         // In the dual-token model, sellers deposited token0 at reveal.
-        // Net solver liquidity = buyerFills - sellerFills (both 100e18 here, so net = 0)
+        // Net solver liquidity = buyerFills - sellerFills (both 1e18 here, so net = 0)
         uint256 netSolverToken0 = buyerAmount > sellerAmount ? buyerAmount - sellerAmount : 0;
         if (netSolverToken0 > 0) {
             IERC20(token0).approve(hookAddr, netSolverToken0);

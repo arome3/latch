@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-obsidian text-starlight font-sans antialiased;
+  }
+
+  /* Subtle noise texture overlay on body */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 256px 256px;
+  }
+}
+
+@layer components {
+  /* Frosted glass panel — the core visual element */
+  .frost-panel {
+    @apply bg-slate/60 backdrop-blur-md border border-white/[0.06] rounded-xl;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.03),
+      0 8px 32px -8px rgba(0, 0, 0, 0.5);
+  }
+
+  /* State badges */
+  .badge-encrypted {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md
+           bg-latch-gold/15 text-latch-gold text-xs font-mono font-medium
+           border border-latch-gold/20 tracking-wider uppercase;
+  }
+
+  .badge-verified {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md
+           bg-zk-green/15 text-zk-green text-xs font-mono font-medium
+           border border-zk-green/20 tracking-wider uppercase;
+    box-shadow: 0 0 12px rgba(0, 255, 148, 0.1);
+  }
+
+  /* Primary action buttons */
+  .latch-button {
+    @apply relative px-5 py-2.5 rounded-lg font-medium text-sm
+           transition-all duration-150 ease-out
+           disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none;
+  }
+
+  .latch-button-gold {
+    @apply latch-button bg-latch-gold/90 text-obsidian
+           hover:bg-latch-gold hover:shadow-[0_0_20px_rgba(255,176,32,0.25)]
+           active:scale-[0.98];
+  }
+
+  .latch-button-green {
+    @apply latch-button bg-zk-green/90 text-obsidian
+           hover:bg-zk-green hover:shadow-[0_0_20px_rgba(0,255,148,0.25)]
+           active:scale-[0.98];
+  }
+
+  .latch-button-muted {
+    @apply latch-button bg-white/[0.06] text-mist border border-white/[0.08]
+           hover:bg-white/[0.1] hover:text-starlight;
+  }
+
+  /* Data label styling */
+  .data-label {
+    @apply text-[11px] font-mono uppercase tracking-[0.15em] text-mist/70;
+  }
+
+  .data-value {
+    @apply text-sm font-mono text-starlight tabular-nums;
+  }
+
+  /* Input styling */
+  .latch-input {
+    @apply w-full bg-white/[0.04] border border-white/[0.08] rounded-lg
+           px-3 py-2.5 text-sm font-mono text-starlight
+           placeholder:text-mist/40
+           focus:outline-none focus:border-latch-gold/40 focus:bg-white/[0.06]
+           transition-colors duration-150;
+  }
+}
