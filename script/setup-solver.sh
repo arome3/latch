@@ -56,6 +56,12 @@ if [ "${CHAIN_ID}" = "31337" ]; then
     RPC_URL="http://127.0.0.1:8545"
     # Anvil account #3 (solver: 0x90F79bf6EB2c4f870365E785982E1f101E93b906)
     PRIVATE_KEY="0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
+elif [ "${CHAIN_ID}" = "1301" ]; then
+    RPC_URL="${RPC_UNICHAIN_SEPOLIA:-https://sepolia.unichain.org}"
+    PRIVATE_KEY="${SOLVER_PRIVATE_KEY:-}"
+    if [ -z "${PRIVATE_KEY}" ]; then
+        echo -e "${YELLOW}Warning: SOLVER_PRIVATE_KEY env var needed for Unichain Sepolia.${NC}"
+    fi
 else
     RPC_URL="${RPC_URL:-}"
     PRIVATE_KEY="${SOLVER_PRIVATE_KEY:-}"

@@ -41,12 +41,15 @@ contract HelperConfig is Script {
     /// @notice Uniswap v4 PoolManager addresses by network
     address public constant MAINNET_POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
     address public constant SEPOLIA_POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
+    address public constant UNICHAIN_SEPOLIA_POOL_MANAGER = 0x00B036B58a818B1BC34d502D3fE730Db729e62AC;
 
     constructor() {
         if (block.chainid == 1) {
             activeNetworkConfig = getMainnetConfig();
         } else if (block.chainid == 11155111) {
             activeNetworkConfig = getSepoliaConfig();
+        } else if (block.chainid == 1301) {
+            activeNetworkConfig = getUnichainSepoliaConfig();
         } else {
             activeNetworkConfig = getAnvilConfig();
         }
@@ -87,6 +90,29 @@ contract HelperConfig is Script {
             timelockDelay: uint64(vm.envOr("TIMELOCK_DELAY", uint256(5760))),
             minOrderSize: uint128(vm.envOr("MIN_ORDER_SIZE", uint256(0))),
             whitelistRoot: vm.envOr("WHITELIST_ROOT", bytes32(0)),
+            penaltyRecipient: vm.envOr("PENALTY_RECIPIENT", vm.envAddress("HOOK_OWNER")),
+            commitDuration: uint32(vm.envOr("COMMIT_DURATION", uint256(25))),
+            revealDuration: uint32(vm.envOr("REVEAL_DURATION", uint256(25))),
+            settleDuration: uint32(vm.envOr("SETTLE_DURATION", uint256(25))),
+            claimDuration: uint32(vm.envOr("CLAIM_DURATION", uint256(100))),
+            feeRate: uint16(vm.envOr("FEE_RATE", uint256(30)))
+        });
+    }
+
+    /// @notice Get configuration for Unichain Sepolia (OP Stack L2, chain 1301)
+    /// @dev ~1 second block time; Poseidon contracts exceed EIP-170 so ordersRootValidation must be disabled
+    function getUnichainSepoliaConfig() public view returns (NetworkConfig memory) {
+        return NetworkConfig({
+            poolManager: UNICHAIN_SEPOLIA_POOL_MANAGER,
+            hookOwner: vm.envAddress("HOOK_OWNER"),
+            deployerKey: vm.envUint("DEPLOYER_PRIVATE_KEY"),
+            defaultFee: 3000,
+            defaultTickSpacing: 60,
+            batchStartBond: 0,
+            minOrdersForBondReturn: 0,
+            timelockDelay: 5760,
+            minOrderSize: 0,
+            whitelistRoot: bytes32(0),
             penaltyRecipient: vm.envOr("PENALTY_RECIPIENT", vm.envAddress("HOOK_OWNER")),
             commitDuration: uint32(vm.envOr("COMMIT_DURATION", uint256(25))),
             revealDuration: uint32(vm.envOr("REVEAL_DURATION", uint256(25))),

@@ -1,8 +1,15 @@
 /**
- * Chain event watcher — listens for BatchStarted and OrderRevealedData events.
+ * Chain event watcher — detects settleable batches and collects revealed orders.
  *
- * Events are collected in block+logIndex order because fills[i] corresponds
- * to the i-th order in _revealedSlots (push order during reveal).
+ * Uses ONLY direct contract calls (getCurrentBatchId, getBatchPhase, getBatch,
+ * getRevealedOrderCount, getRevealedOrderAt) — no eth_getLogs at all. This is
+ * critical for OP Stack L2s (like Unichain) where eth_blockNumber returns the
+ * "safe" head, which can lag thousands of blocks behind the actual chain tip.
+ * eth_getLogs only covers blocks up to the safe head, but eth_call always
+ * executes against the latest (unsafe) state.
+ *
+ * Order indices from getRevealedOrderAt(i) match fills[i] in the proof because
+ * both follow the _revealedSlots push order during reveal.
  */
 
 import { ethers } from "ethers";
@@ -35,115 +42,103 @@ export class BatchWatcher {
   }
 
   /**
-   * Scan for the latest batch and its revealed orders.
+   * Detect the latest settleable batch via direct contract calls,
+   * then collect its revealed orders from on-chain storage.
    * Returns null if no batch is in SETTLE phase.
    */
   async findSettleableBatch(
-    fromBlock: number | "latest"
+    _fromBlock?: number | "latest"
   ): Promise<BatchState | null> {
-    // Find the most recent BatchStarted event for our pool
-    const startFilter = this.contract.filters.BatchStarted(this.poolId);
-    let scanFrom: number;
-    if (fromBlock === "latest") {
-      const currentBlockNum = await this.provider.getBlockNumber();
-      scanFrom = Math.max(0, currentBlockNum - 10000);
-    } else {
-      scanFrom = fromBlock;
-    }
-    const startEvents = await this.contract.queryFilter(
-      startFilter,
-      scanFrom
+    // Step 1: Get current batch ID via contract call (not event scan).
+    // eth_call executes against the latest state, bypassing the safe/unsafe
+    // block discrepancy that breaks eth_getLogs on OP Stack L2s.
+    const currentBatchId = BigInt(
+      await this.contract.getCurrentBatchId(this.poolId)
     );
 
-    if (startEvents.length === 0) {
-      this.logger.debug("No BatchStarted events found");
+    if (currentBatchId === 0n) {
+      this.logger.debug("No active batch");
       return null;
     }
 
-    // Use the latest batch
-    const latestStart = startEvents[startEvents.length - 1];
-    const parsed = this.contract.interface.parseLog({
-      topics: latestStart.topics as string[],
-      data: latestStart.data,
-    });
-    if (!parsed) return null;
-
-    const batchId = parsed.args[1] as bigint;
-    const startBlock = parsed.args[2] as bigint;
-    const commitEndBlock = parsed.args[3] as bigint;
-    // Event only emits startBlock and commitEndBlock.
-    // Other boundaries are derived from pool config durations (not needed for settlement logic).
-    const revealEndBlock = 0n;
-    const settleEndBlock = 0n;
-    const claimEndBlock = 0n;
-
-    // Check if batch is in SETTLE phase
-    const currentBlock = await this.provider.getBlockNumber();
+    // Step 2: Check if batch is in SETTLE phase
     const phase = Number(
-      await this.contract.getBatchPhase(this.poolId, batchId)
+      await this.contract.getBatchPhase(this.poolId, currentBatchId)
     );
     // BatchPhase.SETTLE == 3
     if (phase !== 3) {
       this.logger.debug(
-        { batchId: batchId.toString(), phase },
+        { batchId: currentBatchId.toString(), phase },
         "Batch not in SETTLE phase"
       );
       return null;
     }
 
-    // Check if already settled
-    const settled = await this.contract.isBatchSettled(this.poolId, batchId);
+    // Step 3: Check if already settled
+    const settled = await this.contract.isBatchSettled(
+      this.poolId,
+      currentBatchId
+    );
     if (settled) {
-      this.logger.debug({ batchId: batchId.toString() }, "Batch already settled");
+      this.logger.debug(
+        { batchId: currentBatchId.toString() },
+        "Batch already settled"
+      );
       return null;
     }
 
-    // Collect OrderRevealedData events for this batch (in block+logIndex order)
-    const revealFilter = this.contract.filters.OrderRevealedData(
+    // Step 4: Get batch data for start block and phase boundaries
+    const batchData = await this.contract.getBatch(
       this.poolId,
-      batchId
+      currentBatchId
     );
-    const revealEvents = await this.contract.queryFilter(revealFilter);
+    const startBlock = Number(batchData.startBlock);
+    const commitEndBlock = Number(batchData.commitEndBlock);
+    const revealEndBlock = Number(batchData.revealEndBlock);
+    const settleEndBlock = Number(batchData.settleEndBlock);
+    const claimEndBlock = Number(batchData.claimEndBlock);
 
-    // Sort by block number, then log index
-    revealEvents.sort((a, b) => {
-      if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
-      return a.index - b.index;
-    });
+    // Step 5: Collect revealed orders via contract calls (NOT events).
+    // eth_call accesses the unsafe chain tip; eth_getLogs only covers the safe head.
+    const orderCount = Number(
+      await this.contract.getRevealedOrderCount(this.poolId, currentBatchId)
+    );
 
-    const orders: IndexedOrder[] = revealEvents.map((event, idx) => {
-      const log = this.contract.interface.parseLog({
-        topics: event.topics as string[],
-        data: event.data,
+    const orders: IndexedOrder[] = [];
+    for (let i = 0; i < orderCount; i++) {
+      const [trader, amount, limitPrice, isBuy] =
+        await this.contract.getRevealedOrderAt(
+          this.poolId,
+          currentBatchId,
+          i
+        );
+      orders.push({
+        index: i,
+        trader: trader as string,
+        amount: amount as bigint,
+        limitPrice: limitPrice as bigint,
+        isBuy: isBuy as boolean,
       });
-      if (!log) throw new Error("Failed to parse OrderRevealedData event");
-
-      return {
-        index: idx,
-        trader: log.args.trader as string,
-        amount: log.args.amount as bigint,
-        limitPrice: log.args.limitPrice as bigint,
-        isBuy: log.args.isBuy as boolean,
-      };
-    });
+    }
 
     this.logger.info(
       {
-        batchId: batchId.toString(),
+        batchId: currentBatchId.toString(),
         orderCount: orders.length,
-        currentBlock,
+        startBlock,
+        settleEndBlock,
       },
       "Found settleable batch"
     );
 
     return {
-      batchId,
+      batchId: currentBatchId,
       poolId: this.poolId,
-      startBlock,
-      commitEndBlock,
-      revealEndBlock,
-      settleEndBlock,
-      claimEndBlock,
+      startBlock: BigInt(startBlock),
+      commitEndBlock: BigInt(commitEndBlock),
+      revealEndBlock: BigInt(revealEndBlock),
+      settleEndBlock: BigInt(settleEndBlock),
+      claimEndBlock: BigInt(claimEndBlock),
       orders,
       feeRate: 0, // Will be read from pool config
       whitelistRoot: "0x0",

@@ -84,9 +84,11 @@ title = "Latch Protocol"
 [etherscan]
 mainnet = { key = "${ETHERSCAN_API_KEY}" }
 sepolia = { key = "${ETHERSCAN_API_KEY}" }
+unichain_sepolia = { key = "${UNISCAN_API_KEY}", url = "https://api-sepolia.uniscan.xyz/api" }
 
 # RPC endpoints
 [rpc_endpoints]
 mainnet = "${RPC_MAINNET}"
 sepolia = "${RPC_SEPOLIA}"
+unichain_sepolia = "${RPC_UNICHAIN_SEPOLIA}"
 anvil = "http://127.0.0.1:8545"

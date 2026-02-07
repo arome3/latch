@@ -13,6 +13,7 @@
 .PHONY: all install build build-sizes clean test test-v test-gas coverage \
         circuit-compile circuit-prove circuit-verify generate-verifier \
         anvil deploy-local deploy-full-local deploy-sepolia deploy-mainnet \
+        deploy-unichain-sepolia \
         init-pool deploy-verify solver-setup solver-start deploy-all-local \
         fmt verify-setup help
 
@@ -161,6 +162,12 @@ deploy-sepolia:
 		--verify \
 		-vvvv
 
+## Deploy to Unichain Sepolia (testnet, disables ordersRootValidation)
+deploy-unichain-sepolia:
+	@forge script script/DeployTestnet.s.sol:DeployTestnet \
+		--rpc-url $${RPC_UNICHAIN_SEPOLIA} \
+		--broadcast --verify -vvvv
+
 ## Deploy to mainnet (use with caution!)
 deploy-mainnet:
 	@echo "Deploying to MAINNET - are you sure?"
@@ -243,6 +250,7 @@ help:
 	@echo "  make deploy-full-local  Deploy all contracts + pool + tokens (Anvil)"
 	@echo "  make deploy-local       Deploy production contracts (Anvil)"
 	@echo "  make deploy-sepolia     Deploy to Sepolia testnet"
+	@echo "  make deploy-unichain-sepolia  Deploy to Unichain Sepolia"
 	@echo "  make deploy-all-local   Full setup: deploy + verify + solver"
 	@echo ""
 	@echo "Post-Deploy:"

@@ -103,6 +103,36 @@ contract TransparencyReader {
         }
     }
 
+    /// @notice Returns all revealed order data for a batch
+    /// @dev Aggregates per-index data from LatchHook into arrays.
+    ///      Enables solvers on OP Stack L2s to read order data via a single eth_call.
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @return traders Array of trader addresses
+    /// @return amounts Array of order amounts
+    /// @return limitPrices Array of order limit prices
+    /// @return isBuys Array of buy/sell flags
+    function getRevealedOrders(PoolId poolId, uint256 batchId)
+        external
+        view
+        returns (
+            address[] memory traders,
+            uint128[] memory amounts,
+            uint128[] memory limitPrices,
+            bool[] memory isBuys
+        )
+    {
+        uint256 len = latchHook.getRevealedOrderCount(poolId, batchId);
+        traders = new address[](len);
+        amounts = new uint128[](len);
+        limitPrices = new uint128[](len);
+        isBuys = new bool[](len);
+        for (uint256 i = 0; i < len; i++) {
+            (traders[i], amounts[i], limitPrices[i], isBuys[i]) =
+                latchHook.getRevealedOrderAt(poolId, batchId, i);
+        }
+    }
+
     /// @notice Get aggregate statistics for a pool
     /// @dev Warning: Gas cost increases with number of batches
     /// @param poolId The pool identifier

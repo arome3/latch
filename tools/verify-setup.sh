@@ -83,10 +83,10 @@ if [ -f "foundry.toml" ]; then
     check_pass "foundry.toml exists"
 
     # Check Solidity version
-    if grep -q 'solc = "0.8.26"' foundry.toml; then
-        check_pass "Solidity version: 0.8.26"
+    if grep -q 'solc = "0.8.27"' foundry.toml; then
+        check_pass "Solidity version: 0.8.27"
     else
-        check_fail "Solidity version should be 0.8.26"
+        check_fail "Solidity version should be 0.8.27"
     fi
 
     # Check EVM version

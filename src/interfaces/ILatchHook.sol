@@ -317,6 +317,20 @@ interface ILatchHook is ILatchHookMinimal {
     /// @return count Number of revealed orders
     function getRevealedOrderCount(PoolId poolId, uint256 batchId) external view returns (uint256 count);
 
+    /// @notice Get a single revealed order by index
+    /// @dev Reads RevealSlot + packed amount/limitPrice from storage
+    /// @param poolId The pool identifier
+    /// @param batchId The batch identifier
+    /// @param index The order index (0-based, in reveal order)
+    /// @return trader The trader's address
+    /// @return amount Order amount
+    /// @return limitPrice Order limit price
+    /// @return isBuy True for buy order, false for sell order
+    function getRevealedOrderAt(PoolId poolId, uint256 batchId, uint256 index)
+        external
+        view
+        returns (address trader, uint128 amount, uint128 limitPrice, bool isBuy);
+
     // ============ Pure Helper Functions ============
 
     /// @notice Compute the commitment hash for order parameters
@@ -349,6 +363,12 @@ interface ILatchHook is ILatchHookMinimal {
     /// @dev Bond is uniform for all traders to preserve commit-phase privacy
     /// @param _bondAmount The new bond amount in token1
     function setCommitBondAmount(uint128 _bondAmount) external;
+
+    /// @notice Enable or disable on-chain ordersRoot validation
+    /// @dev When disabled, Poseidon contracts (PoseidonT4, PoseidonT6) are not needed.
+    /// @dev Use for testnet deployments where Poseidon contracts exceed EIP-170 size limit.
+    /// @param enabled True to enable ordersRoot cross-checking, false to trust proof only
+    function setOrdersRootValidation(bool enabled) external;
 
     /// @notice Get a trader's reveal deposit for a batch
     /// @param poolId The pool identifier

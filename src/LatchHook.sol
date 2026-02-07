@@ -166,6 +166,11 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @dev Stores only trader + isBuy (1 slot). Full order data emitted via OrderRevealedData event.
     mapping(PoolId => mapping(uint256 => RevealSlot[])) internal _revealedSlots;
 
+    /// @notice Packed (amount, limitPrice) per revealed order: PoolId => batchId => index => packed
+    /// @dev Stores amount in upper 128 bits, limitPrice in lower 128 bits.
+    ///      Enables solver reads via eth_call on OP Stack L2s where eth_getLogs only covers the safe head.
+    mapping(PoolId => mapping(uint256 => mapping(uint256 => uint256))) internal _revealedAmountData;
+
     /// @notice Order leaf hashes for ordersRoot validation: PoolId => batchId => uint256[]
     /// @dev Computed via OrderLib.encodeAsLeaf() during reveal, used to validate PI[5] at settlement
     mapping(PoolId => mapping(uint256 => uint256[])) internal _orderLeaves;
@@ -229,6 +234,14 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
     /// @dev Set to 0 for zero-bond mode (testing). Privacy-preserving: same amount for buyers and sellers.
     uint128 public commitBondAmount;
 
+    // ============ Orders Root Validation Toggle ============
+
+    /// @notice Whether on-chain ordersRoot validation is enabled
+    /// @dev When false, skips PoseidonT6 leaf hashing at reveal and PoseidonT4 root computation at settlement.
+    /// @dev Allows deployment on chains where Poseidon contracts exceed EIP-170 (24KB) size limit.
+    /// @dev The ZK proof still verifies ordersRoot internally — contract just doesn't cross-check it.
+    bool public ordersRootValidationEnabled = true;
+
     // ============ Events ============
 
     /// @notice Emitted when pause flags are updated
@@ -249,6 +262,9 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
 
     /// @notice Emitted when commit bond amount is updated
     event CommitBondAmountUpdated(uint128 oldAmount, uint128 newAmount);
+
+    /// @notice Emitted when ordersRoot validation toggle is updated
+    event OrdersRootValidationUpdated(bool enabled);
 
     /// @notice Emitted when solver registry is updated
     event SolverRegistryUpdated(address oldRegistry, address newRegistry);
@@ -425,6 +441,15 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         uint128 oldAmount = commitBondAmount;
         commitBondAmount = _bondAmount;
         emit CommitBondAmountUpdated(oldAmount, _bondAmount);
+    }
+
+    /// @notice Enable or disable on-chain ordersRoot validation
+    /// @dev When disabled, Poseidon contracts (PoseidonT4, PoseidonT6) are not needed.
+    /// @dev Use for testnet deployments where Poseidon contracts exceed EIP-170 size limit.
+    /// @param enabled True to enable ordersRoot cross-checking, false to trust proof only
+    function setOrdersRootValidation(bool enabled) external onlyOwner {
+        ordersRootValidationEnabled = enabled;
+        emit OrdersRootValidationUpdated(enabled);
     }
 
     /// @notice Set the batch start bond via emergency module
@@ -1213,12 +1238,20 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         // 7. Store minimal reveal data (1 slot vs Order's 2 slots)
         _revealedSlots[poolId][batchId].push(RevealSlot({trader: msg.sender, isBuy: isBuy}));
 
+        // 7a. Store amount/limitPrice for solver reads via eth_call
+        // (OP Stack L2s: eth_getLogs only covers safe head, but eth_call accesses unsafe tip)
+        _revealedAmountData[poolId][batchId][_revealedSlots[poolId][batchId].length - 1] =
+            (uint256(amount) << 128) | uint256(limitPrice);
+
         // 7b. Store leaf hash for ordersRoot validation at settlement
-        _orderLeaves[poolId][batchId].push(
-            OrderLib.encodeAsLeaf(
-                Order({amount: amount, limitPrice: limitPrice, trader: msg.sender, isBuy: isBuy})
-            )
-        );
+        // Skipped when ordersRootValidation is disabled (avoids PoseidonT6 dependency)
+        if (ordersRootValidationEnabled) {
+            _orderLeaves[poolId][batchId].push(
+                OrderLib.encodeAsLeaf(
+                    Order({amount: amount, limitPrice: limitPrice, trader: msg.sender, isBuy: isBuy})
+                )
+            );
+        }
 
         // 8. Mark trader as having revealed
         _hasRevealed[poolId][batchId][msg.sender] = true;
@@ -1480,9 +1513,10 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         }
 
         // [5] ordersRoot — must match Merkle root computed from revealed order leaves
-        // Circuit uses a fixed 16-leaf tree (zero-padded), so we must match that structure
-        // For empty batches (count=0), circuit returns 0
-        {
+        // Skipped when ordersRootValidation is disabled (avoids PoseidonT4 dependency)
+        if (ordersRootValidationEnabled) {
+            // Circuit uses a fixed 16-leaf tree (zero-padded), so we must match that structure
+            // For empty batches (count=0), circuit returns 0
             uint256[] storage leaves = _orderLeaves[poolId][batchId];
             uint256 n = leaves.length;
             bytes32 expectedRoot;
@@ -1934,6 +1968,20 @@ contract LatchHook is ILatchHook, BaseHook, ReentrancyGuard, Ownable2Step {
         returns (uint256 count)
     {
         return _revealedSlots[poolId][batchId].length;
+    }
+
+    /// @inheritdoc ILatchHook
+    function getRevealedOrderAt(PoolId poolId, uint256 batchId, uint256 index)
+        external
+        view
+        returns (address trader, uint128 amount, uint128 limitPrice, bool isBuy)
+    {
+        RevealSlot storage slot = _revealedSlots[poolId][batchId][index];
+        trader = slot.trader;
+        isBuy = slot.isBuy;
+        uint256 packed = _revealedAmountData[poolId][batchId][index];
+        amount = uint128(packed >> 128);
+        limitPrice = uint128(packed);
     }
 
     // ============ Emergency Refund Callback (Fix #1) ============

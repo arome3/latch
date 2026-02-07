@@ -367,6 +367,15 @@ contract MockLatchHook is ILatchHook {
         return 0;
     }
 
+    function getRevealedOrderAt(PoolId, uint256, uint256)
+        external
+        pure
+        override
+        returns (address, uint128, uint128, bool)
+    {
+        return (address(0), 0, 0, false);
+    }
+
     // ============ EmergencyModule Helper Functions ============
 
     function hasRevealed(PoolId, uint256, address) external pure override returns (bool) {
@@ -412,6 +421,10 @@ contract MockLatchHook is ILatchHook {
     }
 
     function setCommitBondAmount(uint128) external override {
+        // No-op for mock
+    }
+
+    function setOrdersRootValidation(bool) external override {
         // No-op for mock
     }
 

@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Uniswap-v4%20Hook-FF007A?style=for-the-badge&logo=uniswap&logoColor=white" alt="Uniswap v4"/>
   <img src="https://img.shields.io/badge/ZK%20Proofs-Noir-5C2D91?style=for-the-badge" alt="Noir"/>
-  <img src="https://img.shields.io/badge/Solidity-0.8.26-363636?style=for-the-badge&logo=solidity" alt="Solidity"/>
+  <img src="https://img.shields.io/badge/Solidity-0.8.27-363636?style=for-the-badge&logo=solidity" alt="Solidity"/>
   <img src="https://img.shields.io/badge/EVM-Cancun-3C3C3D?style=for-the-badge&logo=ethereum" alt="Cancun"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"/>
 </p>
@@ -48,6 +48,35 @@ Latch fundamentally changes how trades execute by introducing **commit-reveal ba
 3. **Single clearing price** computed to maximize matched volume
 4. **ZK proof** verifies the settlement is mathematically correct
 5. **No one can frontrun** because no one sees orders until it's too late
+
+---
+
+## Why This Matters
+
+DeFi trading today leaks information at every step. When you submit a swap on a standard AMM, your intent is broadcast to the entire network *before* execution. Searchers, builders, and validators exploit this information asymmetry to extract value from your trade — a phenomenon known as **MEV (Maximal Extractable Value)**, costing users over **$1 billion annually**.
+
+This isn't a bug in any one protocol. It's a structural consequence of **sequential, transparent order execution** on public blockchains. Every pending transaction is a signal. Every signal is an opportunity for extraction.
+
+**Latch eliminates this information leakage at the protocol level.** By collecting orders in a blinded commit phase, revealing them simultaneously, and settling all trades at a single mathematically-proven clearing price, Latch removes the asymmetry that makes MEV possible:
+
+- **No information exposure** — Orders are commitment hashes during the commit phase. Even the trade direction (buy/sell) is hidden behind uniform token1 bond deposits.
+- **No adverse selection** — All traders get the same clearing price. There is no "first-mover advantage" and no way to position ahead of informed flow.
+- **No extractive dynamics** — Sandwich attacks require seeing your order before execution. With commit-reveal, that window doesn't exist.
+- **Full on-chain verifiability** — The ZK proof cryptographically guarantees settlement correctness. No trust in the solver, no trust in an off-chain orderbook. Verification happens on-chain in a single transaction.
+
+### Latch vs. Normal AMM Swap
+
+| | Normal AMM Swap | Latch Batch Auction |
+|---|---|---|
+| **Order visibility** | Broadcast in public mempool before execution | Hidden as commitment hash until reveal phase |
+| **Front-running** | Bots see your trade and jump ahead for a better price | Impossible — orders are blinded during commit |
+| **Sandwich attacks** | Bots trade before AND after your swap, extracting value both ways | Impossible — no one sees your order until all orders are revealed simultaneously |
+| **Price impact** | Your trade moves the price against you; larger trades get worse prices | All trades execute at a single uniform clearing price regardless of size |
+| **Information leakage** | Trade direction, size, and timing are all visible on-chain | Direction hidden by uniform bonds; size hidden until batch reveal |
+| **Execution quality** | Depends on when your tx gets included and who else is trading | Deterministic — ZK proof guarantees the mathematically optimal clearing price |
+| **MEV extraction** | ~$1B+ annually extracted from traders | Zero extractable value — the information asymmetry that enables MEV is eliminated |
+| **Settlement trust** | Trust the AMM's constant-product formula | Trustless — ZK proof verified on-chain; anyone can audit |
+| **Who benefits** | Searchers, builders, validators capture value from traders | All traders get fair, uniform pricing; protocol fees go to solvers who do useful work |
 
 ---
 
@@ -221,49 +250,154 @@ This eliminates the traditional AMM's information leakage problem: there are no 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| **Proof Generation** | 1-2 seconds | Barretenberg backend, 16-order batch |
-| **Proof Size** | ~128 KB | UltraHonk proof system |
-| **On-chain Verification** | ~800K gas | Single SNARK verification |
-| **Commit Gas** | ~45K gas | Store commitment hash |
-| **Reveal Gas** | ~65K gas | Verify hash + store order |
-| **Claim Gas** | ~35K gas | Transfer matched tokens |
-| **Storage Savings** | ~2KB/order | Via transient storage (EIP-1153) |
+| **Proof Generation** | ~5 seconds | Barretenberg backend, 16-order batch |
+| **Proof Size** | 10,176 bytes | UltraHonk proof system |
+| **Settlement Gas** | 2.98M gas | ZK proof verification + state updates |
+| **Public Inputs** | 25 (800 bytes) | 9 base + 16 fills |
+| **Commit Gas** | ~45K gas | Store commitment hash + bond deposit |
+| **Reveal Gas** | ~65K gas | Verify hash + store order + trade deposit |
+| **Claim Gas** | ~35K gas | Transfer matched tokens + refund |
+| **LatchHook Bytecode** | 24,223 bytes | EIP-170 compliant (353 byte margin) |
 
 ---
 
-## Quick Start
+## Deployments
+
+### Unichain Sepolia (Chain ID: 1301)
+
+> Live testnet deployment with WETH/USDC pair. Explorer: [sepolia.uniscan.xyz](https://sepolia.uniscan.xyz)
+
+| Contract | Address |
+|----------|---------|
+| **LatchHook** | [`0xfB4B14d550D74d4986BC9aF7e35111543BeA6088`](https://sepolia.uniscan.xyz/address/0xfB4B14d550D74d4986BC9aF7e35111543BeA6088) |
+| **HonkVerifier** | [`0x7334072DB610F77Ebab7332e37915b900455EC43`](https://sepolia.uniscan.xyz/address/0x7334072DB610F77Ebab7332e37915b900455EC43) |
+| **BatchVerifier** | [`0xfab5001ecc4346417Fd6144C246943A6e4e42E42`](https://sepolia.uniscan.xyz/address/0xfab5001ecc4346417Fd6144C246943A6e4e42E42) |
+| **SolverRegistry** | [`0xDbcD9e820a54929BAa21472c98D73C0267620A46`](https://sepolia.uniscan.xyz/address/0xDbcD9e820a54929BAa21472c98D73C0267620A46) |
+| **EmergencyModule** | [`0x72f11E9369f7faf5c24C4791e0Baf58FB8812543`](https://sepolia.uniscan.xyz/address/0x72f11E9369f7faf5c24C4791e0Baf58FB8812543) |
+| **SolverRewards** | [`0x0357091bE78A9B2B4b6b5aEAD338F1c4FD1117ed`](https://sepolia.uniscan.xyz/address/0x0357091bE78A9B2B4b6b5aEAD338F1c4FD1117ed) |
+| **LatchTimelock** | [`0xb9048b4907969a7f94451CFdfA1AE180683338EC`](https://sepolia.uniscan.xyz/address/0xb9048b4907969a7f94451CFdfA1AE180683338EC) |
+| **WhitelistRegistry** | [`0xFABdCCe48bc47DFb68ca6Eb9Ec06da1833A01c92`](https://sepolia.uniscan.xyz/address/0xFABdCCe48bc47DFb68ca6Eb9Ec06da1833A01c92) |
+| **TransparencyReader** | [`0x31AFb8913585768042BAE9aDe62cabE730c3323e`](https://sepolia.uniscan.xyz/address/0x31AFb8913585768042BAE9aDe62cabE730c3323e) |
+| **WETH (mock, 18 dec)** | [`0x3578bAd9c7561CA02E1f6044D5Ed0f97bD85cAF4`](https://sepolia.uniscan.xyz/address/0x3578bAd9c7561CA02E1f6044D5Ed0f97bD85cAF4) |
+| **USDC (mock, 6 dec)** | [`0x3Bea729064A59FC38B930953Df10143aDF4deB36`](https://sepolia.uniscan.xyz/address/0x3Bea729064A59FC38B930953Df10143aDF4deB36) |
+
+**Pool ID:** `0x892a1df7c32af699f5ecabf6347194b65f6d9761f14635a2e8b4bd28c215795a`
+**PoolManager:** [`0x00B036B58a818B1BC34d502D3fE730Db729e62AC`](https://sepolia.uniscan.xyz/address/0x00B036B58a818B1BC34d502D3fE730Db729e62AC) (Uniswap v4)
+
+### Verified E2E Transaction IDs (Batch #2)
+
+A complete batch auction lifecycle executed on Unichain Sepolia:
+
+| Step | Transaction |
+|------|-------------|
+| Start Batch | [`0x144f5691...`](https://sepolia.uniscan.xyz/tx/0x144f569104d13cdfe28da6820aa9a7b9ec26567ace60557802c766b30060138f) |
+| Buyer Commit (blinded) | [`0x71492191...`](https://sepolia.uniscan.xyz/tx/0x714921910eb7d249260d760f5ad807265156c8b986b5cbf9fbf058710ee48b80) |
+| Seller Commit (blinded) | [`0x65f5c2da...`](https://sepolia.uniscan.xyz/tx/0x65f5c2daa0e41b790f8e70f289836449aeae0061388c0b6463bb417dca175474) |
+| Buyer Reveal | [`0xe8adc67f...`](https://sepolia.uniscan.xyz/tx/0xe8adc67f98dc20427d1b86817ab3d5d702ef45460230a1c67a47da2533945bfb) |
+| Seller Reveal | [`0x16ea645a...`](https://sepolia.uniscan.xyz/tx/0x16ea645a651bc0c36509061c08b831a3c789b98a9b99951dac753a9b0b735c6c) |
+| ZK Settlement (2.98M gas) | [`0xaf48f2be...`](https://sepolia.uniscan.xyz/tx/0xaf48f2be46f5880f032bfe3b2d07767830a3ce6ef3fa51ee69cbd29f00ed7016) |
+| Buyer Claim | [`0xb04e0128...`](https://sepolia.uniscan.xyz/tx/0xb04e01288b999737fd58509266f205b6f6c94c8289ab6ab5862739b5a53ee8a4) |
+| Seller Claim | [`0xc76d0f61...`](https://sepolia.uniscan.xyz/tx/0xc76d0f61c6f196f2857f1b40c425edad44e56c57a235845fe57e5d63aa3cff9e) |
+| Solver Reward Claim | [`0x3cd40957...`](https://sepolia.uniscan.xyz/tx/0x3cd40957d547e08a88442b43a11ef58f2d766f0cf5282d3d4299403471b99ccc) |
+
+---
+
+## Quick Start — Run the Full System
+
+### Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| **Foundry** (forge, cast, anvil) | Latest | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+| **Noir** (nargo) | 1.0.0-beta | `curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install \| bash && noirup` |
+| **Barretenberg** (bb) | Latest | `curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install \| bash && bbup -v 0.82.0` |
+| **Node.js** | >= 20 | [nodejs.org](https://nodejs.org) |
+| **jq** | Any | `brew install jq` / `apt install jq` |
+
+Or install everything at once:
+```bash
+./tools/install-deps.sh    # installs Foundry, Noir, Barretenberg
+make verify-setup           # confirms everything is ready
+```
+
+### Option A: Local E2E (Anvil) — 5 minutes
+
+Run a complete batch auction on a local chain. No private keys or testnet ETH needed.
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/latch.git
+# 1. Clone and build
+git clone https://github.com/arome3/latch.git
 cd latch
-
-# Install dependencies (Foundry, Noir, Barretenberg)
-./tools/install-deps.sh
-
-# Verify your setup
-make verify-setup
-
-# Build contracts
+forge install
 make build
 
-# Run the test suite
-make test
+# 2. Start Anvil (Terminal 1)
+#    --code-size-limit is required for Poseidon library contracts
+make anvil
+
+# 3. Deploy all contracts (Terminal 2)
+make deploy-full-local
+
+# 4. Setup and start the solver (Terminal 2)
+./script/setup-solver.sh 31337
+cd solver && npm install && npm run dev
+
+# 5. Run the E2E lifecycle (Terminal 3)
+#    startBatch → commit → reveal → [solver auto-settles with ZK proof] → claim
+bash script/e2e-local.sh
 ```
+
+You'll see the solver detect the batch, generate a ZK proof (~5s), and submit the settlement transaction. Both buyer and seller then claim their tokens.
+
+### Option B: Unichain Sepolia (Real L2) — 10 minutes
+
+Run the same flow on a live OP Stack L2 testnet.
+
+```bash
+# 1. Clone and build (same as above)
+git clone https://github.com/arome3/latch.git
+cd latch
+forge install
+make build
+
+# 2. Set environment variables (3 funded wallets needed)
+export DEPLOYER_PRIVATE_KEY="0x..."      # needs Unichain Sepolia ETH
+export BUYER_PRIVATE_KEY="0x..."         # needs Unichain Sepolia ETH
+export SELLER_PRIVATE_KEY="0x..."        # needs Unichain Sepolia ETH
+export HOOK_OWNER=$(cast wallet address $DEPLOYER_PRIVATE_KEY)
+export RPC_UNICHAIN_SEPOLIA="https://sepolia.unichain.org"
+
+# 3. Deploy all contracts + initialize pool
+make deploy-unichain-sepolia
+
+# 4. Setup and start the solver (Terminal 1)
+export SOLVER_PRIVATE_KEY="0x..."        # solver wallet
+./script/setup-solver.sh 1301
+cd solver && npm install && npm run dev
+
+# 5. Run the E2E lifecycle (Terminal 2)
+bash script/e2e-unichain.sh
+```
+
+Get Unichain Sepolia ETH from the [Unichain Faucet](https://faucet.unichain.org) or bridge from Sepolia.
 
 ### Development Commands
 
 | Command | Description |
 |---------|-------------|
-| `make install` | Install Forge dependencies |
 | `make build` | Compile Solidity contracts |
-| `make test` | Run all tests |
+| `make test` | Run all Solidity tests (894 tests) |
 | `make test-gas` | Run tests with gas report |
 | `make coverage` | Generate coverage report |
-| `make circuit-compile` | Compile Noir circuit |
-| `make generate-verifier` | Generate Solidity verifier from circuit |
+| `make circuit-compile` | Compile Noir ZK circuit |
+| `make circuit-prove` | Generate ZK proof from circuit |
+| `make generate-verifier` | Regenerate HonkVerifier.sol from circuit |
 | `make anvil` | Start local Anvil node |
-| `make deploy-local` | Deploy to local Anvil |
+| `make deploy-full-local` | Deploy everything to local Anvil |
+| `make deploy-unichain-sepolia` | Deploy to Unichain Sepolia |
+| `make solver-setup` | Generate solver .env from deployment |
+| `make solver-start` | Start the solver |
+| `make help` | Show all available targets |
 
 ---
 
@@ -383,7 +517,7 @@ latch/
 
 | Layer | Technology | Why |
 |-------|------------|-----|
-| **Smart Contracts** | Solidity 0.8.26 | Transient storage (EIP-1153) support |
+| **Smart Contracts** | Solidity 0.8.27 | User-defined operators, via_ir compilation |
 | **ZK Circuits** | Noir 1.0.0-beta.15 | Developer-friendly ZK DSL |
 | **Proving Backend** | Barretenberg | Fast UltraHonk proofs |
 | **Testing** | Foundry | Industry-standard Solidity testing |
@@ -413,11 +547,13 @@ latch/
 - [x] Core batch auction mechanism
 - [x] Commit-reveal order flow
 - [x] Noir ZK circuit for settlement verification
-- [x] TypeScript prover SDK
-- [x] Comprehensive test suite (50+ tests)
+- [x] TypeScript solver with proof generation
+- [x] Comprehensive test suite (894 Solidity + 103 Noir circuit tests)
+- [x] Testnet deployment (Unichain Sepolia, OP Stack L2)
+- [x] Solver incentive mechanism (SolverRewards)
+- [x] Full E2E verified on Unichain Sepolia (commit -> reveal -> ZK settle -> claim)
 - [ ] Mainnet deployment
 - [ ] Multi-pool batching (cross-pool MEV protection)
-- [ ] Solver incentive mechanism
 - [ ] SDK for wallet integration
 
 ---
